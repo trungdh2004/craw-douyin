@@ -4,11 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Douyin Crawler</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   </head>
-  <body>
-    <main>
-      <h1>Douyin Crawler</h1>
-      <p>Dashboard quản lý thu thập nội dung Douyin.</p>
+  <body class="min-h-screen bg-slate-950 text-slate-100">
+    <main class="mx-auto max-w-5xl px-6 py-16" x-data="{ ready: true }">
+      <p class="mb-3 text-sm font-semibold uppercase tracking-widest text-cyan-400">Dashboard</p>
+      <h1 class="text-4xl font-bold">Douyin Crawler</h1>
+      <p class="mt-4 text-slate-300" x-show="ready">Dashboard quản lý thu thập nội dung Douyin.</p>
     </main>
   </body>
 </html>

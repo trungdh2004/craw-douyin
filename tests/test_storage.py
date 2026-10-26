@@ -57,10 +57,13 @@ async def test_migrations_persist_crawl_data_in_postgresql() -> None:
 
         app = create_app(database_url=database_url)
         async with app.router.lifespan_context(app):
+            scheduler = app.state.scheduler
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 health_response = await client.get("/api/health")
+
+        assert scheduler.running is False
 
     assert dict(stored) == {
         "name": "Kênh thử nghiệm",
