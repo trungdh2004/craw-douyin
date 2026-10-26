@@ -8,13 +8,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from douyin_crawler.models import CrawlTarget, DouyinVideo
+from douyin_crawler.models import CrawlTarget, DouyinVideo, VideoSource
 
 
 class VideoResponse(BaseModel):
     aweme_id: str
     target_id: int | None
-    source_name: str | None
+    source_names: list[str]
     aweme_type: int
     description: str
     hashtags: list[str]
@@ -28,6 +28,8 @@ class VideoResponse(BaseModel):
     original_url: str
     download_status: str
     video_local_path: str | None
+    downloaded_at: datetime | None
+    download_error: str | None
 
 
 class VideoPage(BaseModel):
@@ -64,11 +66,14 @@ def create_videos_router(sessions: async_sessionmaker[AsyncSession]) -> APIRoute
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=24, ge=1, le=100),
     ) -> VideoPage:
-        statement = select(DouyinVideo, CrawlTarget.name).outerjoin(
-            CrawlTarget, CrawlTarget.id == DouyinVideo.target_id
-        )
+        statement = select(DouyinVideo)
         if target_id is not None:
-            statement = statement.where(DouyinVideo.target_id == target_id)
+            statement = statement.where(
+                select(VideoSource.aweme_id).where(
+                    VideoSource.aweme_id == DouyinVideo.aweme_id,
+                    VideoSource.target_id == target_id,
+                ).exists()
+            )
         if search:
             statement = statement.where(DouyinVideo.description.ilike(f"%{search}%"))
         if min_digg is not None:
@@ -85,9 +90,17 @@ def create_videos_router(sessions: async_sessionmaker[AsyncSession]) -> APIRoute
             total = await session.scalar(select(func.count()).select_from(statement.subquery())) or 0
             sort_column = SORT_COLUMNS[sort]
             direction = sort_column.asc() if order == "asc" else sort_column.desc()
-            rows = (await session.execute(statement.order_by(direction, DouyinVideo.aweme_id).offset((page - 1) * page_size).limit(page_size))).all()
+            videos = list(await session.scalars(statement.order_by(direction, DouyinVideo.aweme_id).offset((page - 1) * page_size).limit(page_size)))
+            source_rows = (await session.execute(
+                select(VideoSource.aweme_id, CrawlTarget.name)
+                .join(CrawlTarget, CrawlTarget.id == VideoSource.target_id)
+                .where(VideoSource.aweme_id.in_([video.aweme_id for video in videos]))
+            )).all() if videos else []
+        source_names: dict[str, list[str]] = {}
+        for aweme_id, name in source_rows:
+            source_names.setdefault(aweme_id, []).append(name)
         return VideoPage(
-            items=[_response(video, source) for video, source in rows],
+            items=[_response(video, source_names.get(video.aweme_id, [])) for video in videos],
             total=total, page=page, page_size=page_size,
         )
 
@@ -102,9 +115,9 @@ def create_videos_router(sessions: async_sessionmaker[AsyncSession]) -> APIRoute
     return router
 
 
-def _response(video: DouyinVideo, source_name: str | None) -> VideoResponse:
+def _response(video: DouyinVideo, source_names: list[str]) -> VideoResponse:
     return VideoResponse(
-        aweme_id=video.aweme_id, target_id=video.target_id, source_name=source_name,
+        aweme_id=video.aweme_id, target_id=video.target_id, source_names=source_names,
         aweme_type=video.aweme_type, description=video.description, hashtags=video.hashtags,
         create_time=video.create_time, author_nickname=video.author_nickname,
         digg_count=video.digg_count, comment_count=video.comment_count,
@@ -112,4 +125,5 @@ def _response(video: DouyinVideo, source_name: str | None) -> VideoResponse:
         cover_url=f"/api/videos/{video.aweme_id}/cover" if video.cover_local_path else None,
         original_url=f"https://www.douyin.com/video/{video.aweme_id}",
         download_status=video.download_status, video_local_path=video.video_local_path,
+        downloaded_at=video.downloaded_at, download_error=video.download_error,
     )

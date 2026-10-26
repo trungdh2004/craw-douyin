@@ -1,6 +1,7 @@
 import asyncio
 import re
 from datetime import UTC, datetime
+from enum import IntEnum
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -15,6 +16,10 @@ from douyin_crawler.models import DouyinVideo
 
 class BatchDownloadRequest(BaseModel):
     aweme_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class AwemeType(IntEnum):
+    IMAGE_ALBUM = 68
 
 
 class DownloadRunner:
@@ -52,23 +57,29 @@ class DownloadRunner:
             try:
                 if self._expired(video.raw_video_url):
                     await self._refresh(video)
-                folder = self._folder(video)
-                folder.mkdir(parents=True, exist_ok=True)
-                if video.aweme_type == 68:
-                    for index, url in enumerate(video.image_urls, start=1):
+                date_folder = self._date_folder(video)
+                if video.aweme_type == AwemeType.IMAGE_ALBUM:
+                    folder = date_folder / video.aweme_id
+                    folder.mkdir(parents=True, exist_ok=True)
+                    for index, url in enumerate(list(video.image_urls), start=1):
                         status, content = await self._media.fetch(url)
+                        if status == 403:
+                            await self._refresh(video)
+                            refreshed_url = video.image_urls[index - 1]
+                            status, content = await self._media.fetch(refreshed_url)
                         if status >= 400:
                             raise RuntimeError(f"Image download returned HTTP {status}")
                         (folder / f"{index:02}.jpg").write_bytes(content)
                     local_path = folder
                 else:
+                    date_folder.mkdir(parents=True, exist_ok=True)
                     status, content = await self._media.fetch(video.raw_video_url or "")
                     if status == 403:
                         await self._refresh(video)
                         status, content = await self._media.fetch(video.raw_video_url or "")
                     if status >= 400:
                         raise RuntimeError(f"Video download returned HTTP {status}")
-                    local_path = folder / f"{video.aweme_id}.mp4"
+                    local_path = date_folder / f"{video.aweme_id}.mp4"
                     local_path.write_bytes(content)
                 video.video_local_path = str(local_path)
                 video.download_status = "COMPLETED"
@@ -85,9 +96,9 @@ class DownloadRunner:
         video.raw_video_url = post.video_url
         video.image_urls = post.image_urls
 
-    def _folder(self, video: DouyinVideo) -> Path:
+    def _date_folder(self, video: DouyinVideo) -> Path:
         channel = re.sub(r"[^\w.-]+", "_", video.author_nickname, flags=re.UNICODE).strip("_") or video.author_sec_uid
-        return self._directory / channel / video.create_time.date().isoformat() / video.aweme_id
+        return self._directory / channel / video.create_time.date().isoformat()
 
     @staticmethod
     def _expired(url: str | None) -> bool:

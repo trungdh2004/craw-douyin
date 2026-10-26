@@ -75,3 +75,11 @@ class CrawlLog(Base):
     new_videos_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     updated_videos_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class VideoSource(Base):
+    __tablename__ = "video_sources"
+
+    aweme_id: Mapped[str] = mapped_column(ForeignKey("douyin_videos.aweme_id", ondelete="CASCADE"), primary_key=True)
+    target_id: Mapped[int] = mapped_column(ForeignKey("crawl_targets.id", ondelete="CASCADE"), primary_key=True)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

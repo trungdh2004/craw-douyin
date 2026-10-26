@@ -128,7 +128,7 @@ async def test_operator_can_manage_scheduled_channel_target(tmp_path: Path) -> N
     assert download.status_code == 202
     assert batch.json()["accepted"] == 2
     assert completed_downloads == 3
-    assert len(logs.json()) == 2
+    assert logs.json()["total"] == 2
     assert len(list((tmp_path / "covers").glob("*.jpg"))) == 6
     assert listed.json()[0]["target_value"] == "MS4wLjABAAAA-demo"
     assert disabled.json()["is_active"] is False

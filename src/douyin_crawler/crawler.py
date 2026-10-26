@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from douyin_crawler.browser import BrowserSessionManager
-from douyin_crawler.models import CrawlLog, CrawlTarget, DouyinVideo
+from douyin_crawler.models import CrawlLog, CrawlTarget, DouyinVideo, VideoSource
 
 
 @dataclass(frozen=True)
@@ -215,6 +215,9 @@ class CrawlRunner:
                 scanned += 1
                 existing = await session.get(DouyinVideo, post.aweme_id)
                 if existing is not None:
+                    source = await session.get(VideoSource, (post.aweme_id, target.id))
+                    if source is None:
+                        session.add(VideoSource(aweme_id=post.aweme_id, target_id=target.id))
                     self._update_metrics(existing, post)
                     updated_count += 1
                     if target.target_type == "CHANNEL" and not post.is_top:
@@ -226,6 +229,8 @@ class CrawlRunner:
                 consecutive_existing = 0
                 cover_path = await self._save_cover(post)
                 session.add(self._video(target.id, post, cover_path))
+                await session.flush()
+                session.add(VideoSource(aweme_id=post.aweme_id, target_id=target.id))
                 new_count += 1
             await session.flush()
             if stop:
@@ -237,7 +242,7 @@ class CrawlRunner:
             return None
         status, content = await self._media.fetch(post.cover_url)
         if status >= 400:
-            return None
+            raise RuntimeError(f"Cover download returned HTTP {status}")
         self._covers_directory.mkdir(parents=True, exist_ok=True)
         path = self._covers_directory / f"{post.aweme_id}.jpg"
         path.write_bytes(content)
