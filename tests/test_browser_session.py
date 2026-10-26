@@ -55,6 +55,7 @@ async def test_operator_can_check_session_and_open_login_browser(tmp_path: Path)
         browser_adapter=adapter,
         browser_profile_directory=profile_directory,
         start_scheduler=False,
+        load_schedules=False,
     )
 
     async with app.router.lifespan_context(app):
@@ -93,6 +94,7 @@ async def test_requests_sharing_profile_do_not_open_competing_browsers(
         browser_adapter=adapter,
         browser_profile_directory=tmp_path / "profile",
         start_scheduler=False,
+        load_schedules=False,
     )
 
     async with app.router.lifespan_context(app):
@@ -118,6 +120,7 @@ async def test_login_session_is_reused_after_application_restart(tmp_path: Path)
         browser_adapter=PersistentProfileBrowserAdapter(),
         browser_profile_directory=profile_directory,
         start_scheduler=False,
+        load_schedules=False,
     )
     async with first_app.router.lifespan_context(first_app):
         async with AsyncClient(
@@ -130,6 +133,7 @@ async def test_login_session_is_reused_after_application_restart(tmp_path: Path)
         browser_adapter=PersistentProfileBrowserAdapter(),
         browser_profile_directory=profile_directory,
         start_scheduler=False,
+        load_schedules=False,
     )
     async with restarted_app.router.lifespan_context(restarted_app):
         async with AsyncClient(
