@@ -10,6 +10,7 @@ Yêu cầu: Docker, Python 3.12+ và `uv`.
 cp .env.example .env
 docker compose up -d postgres
 uv sync
+uv run playwright install chromium
 uv run alembic upgrade head
 uv run uvicorn douyin_crawler.main:app --reload
 ```

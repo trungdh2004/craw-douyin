@@ -8,10 +8,59 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   </head>
   <body class="min-h-screen bg-slate-950 text-slate-100">
-    <main class="mx-auto max-w-5xl px-6 py-16" x-data="{ ready: true }">
+    <main class="mx-auto max-w-5xl px-6 py-16">
       <p class="mb-3 text-sm font-semibold uppercase tracking-widest text-cyan-400">Dashboard</p>
       <h1 class="text-4xl font-bold">Douyin Crawler</h1>
-      <p class="mt-4 text-slate-300" x-show="ready">Dashboard quản lý thu thập nội dung Douyin.</p>
+      <p class="mt-4 text-slate-300">Dashboard quản lý thu thập nội dung Douyin.</p>
+
+      <section
+        class="mt-10 rounded-2xl border border-slate-800 bg-slate-900 p-6"
+        x-data="browserSession()"
+        x-init="refresh()"
+      >
+        <h2 class="text-xl font-semibold">Trạng thái đăng nhập Douyin</h2>
+        <div class="mt-4 flex flex-wrap items-center gap-4">
+          <span class="rounded-full bg-slate-800 px-3 py-1 text-sm" x-text="statusLabel"></span>
+          <button
+            type="button"
+            class="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="status === 'LOGIN_IN_PROGRESS'"
+            @click="login()"
+          >
+            Mở Chromium để đăng nhập
+          </button>
+        </div>
+        <p class="mt-3 text-sm text-slate-400">
+          Cửa sổ Chromium sử dụng profile lưu bền vững; hãy quét QR hoặc xử lý Captcha rồi đóng cửa sổ.
+        </p>
+      </section>
     </main>
+    <script>
+      function browserSession() {
+        return {
+          status: 'CHECKING',
+          get statusLabel() {
+            return {
+              CHECKING: 'Đang kiểm tra…',
+              AUTHENTICATED: 'Đã đăng nhập',
+              LOGIN_REQUIRED: 'Cần đăng nhập',
+              LOGIN_IN_PROGRESS: 'Đang mở Chromium…'
+            }[this.status] || 'Không xác định';
+          },
+          async refresh() {
+            const response = await fetch('/api/browser/status');
+            this.status = (await response.json()).status;
+            if (this.status === 'LOGIN_IN_PROGRESS') {
+              window.setTimeout(() => this.refresh(), 1500);
+            }
+          },
+          async login() {
+            const response = await fetch('/api/browser/login', { method: 'POST' });
+            this.status = (await response.json()).status;
+            window.setTimeout(() => this.refresh(), 1500);
+          }
+        };
+      }
+    </script>
   </body>
 </html>
