@@ -5,15 +5,21 @@ from typing import AsyncIterator
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from douyin_crawler.database import create_database_engine
 from douyin_crawler.browser import (
     BrowserSessionManager,
+    BrowserSessionStatus,
     DouyinBrowserAdapter,
     PlaywrightDouyinBrowserAdapter,
 )
 from douyin_crawler.settings import get_settings
+
+
+class BrowserStatusResponse(BaseModel):
+    status: BrowserSessionStatus
 
 
 def create_app(
@@ -56,14 +62,14 @@ def create_app(
         }
 
     @app.get("/api/browser/status")
-    async def browser_status() -> dict[str, str]:
+    async def browser_status() -> BrowserStatusResponse:
         status = await browser_session.get_status()
-        return {"status": status.value}
+        return BrowserStatusResponse(status=status)
 
     @app.post("/api/browser/login", status_code=202)
-    async def browser_login() -> dict[str, str]:
+    async def browser_login() -> BrowserStatusResponse:
         status = browser_session.start_login()
-        return {"status": status.value}
+        return BrowserStatusResponse(status=status)
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:

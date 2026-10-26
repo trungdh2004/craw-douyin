@@ -4,6 +4,7 @@ from pathlib import Path
 from httpx import ASGITransport, AsyncClient
 
 from douyin_crawler.browser import BrowserSessionStatus
+from douyin_crawler.browser import BrowserSessionManager
 from douyin_crawler.main import create_app
 
 
@@ -137,3 +138,34 @@ async def test_login_session_is_reused_after_application_restart(tmp_path: Path)
             response = await client.get("/api/browser/status")
 
     assert response.json() == {"status": "AUTHENTICATED"}
+
+
+async def test_background_browser_work_waits_for_same_profile_across_managers(
+    tmp_path: Path,
+) -> None:
+    profile_directory = tmp_path / "shared-profile"
+    login_adapter = BlockingBrowserAdapter()
+    login_manager = BrowserSessionManager(login_adapter, profile_directory)
+    background_manager = BrowserSessionManager(
+        FakeDouyinBrowserAdapter(), profile_directory
+    )
+    background_started = asyncio.Event()
+
+    async def background_operation(profile: Path) -> Path:
+        background_started.set()
+        return profile
+
+    login_manager.start_login()
+    await login_adapter.login_started.wait()
+    background_task = asyncio.create_task(
+        background_manager.run_with_profile(background_operation)
+    )
+    await asyncio.sleep(0.1)
+
+    assert not background_started.is_set()
+
+    login_adapter.close_login.set()
+    await login_manager.wait_for_login()
+    used_profile = await background_task
+
+    assert used_profile == profile_directory
