@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from enum import StrEnum
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -65,7 +65,7 @@ class TargetService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         scheduler: AsyncIOScheduler,
-        run_target: Callable[[int], Awaitable[None]],
+        run_target: Callable[[int], object],
     ) -> None:
         self._sessions = sessions
         self._scheduler = scheduler
@@ -117,6 +117,12 @@ class TargetService:
             await session.delete(target)
             await session.commit()
         self._remove_schedule(target_id)
+
+    async def run_now(self, target_id: int) -> None:
+        async with self._sessions() as session:
+            if await session.get(CrawlTarget, target_id) is None:
+                raise HTTPException(status_code=404, detail="Crawl target not found")
+        self._run_target(target_id)
 
     def _sync_schedule(self, target: CrawlTarget) -> None:
         if target.is_active:
@@ -175,5 +181,10 @@ def create_targets_router(service: TargetService) -> APIRouter:
     async def delete_target(target_id: int) -> Response:
         await service.delete(target_id)
         return Response(status_code=204)
+
+    @router.post("/{target_id}/run", status_code=202)
+    async def run_target(target_id: int) -> dict[str, str]:
+        await service.run_now(target_id)
+        return {"status": "ACCEPTED"}
 
     return router
