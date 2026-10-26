@@ -6,6 +6,14 @@ Dịch vụ FastAPI hợp nhất cho việc lên lịch thu thập metadata Douy
 
 Yêu cầu: Docker, Python 3.12+ và `uv`.
 
+Cách nhanh nhất:
+
+```bash
+./run.sh
+```
+
+Hoặc chạy từng bước:
+
 ```bash
 cp .env.example .env
 docker compose up -d postgres
