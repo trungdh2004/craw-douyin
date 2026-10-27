@@ -126,6 +126,9 @@ const DEFAULT_VIDEO_FILTERS: VideoFilterState = {
   target_id: '',
   aweme_type: '',
   download_status: '',
+  is_bookmarked: '',
+  date_from: '',
+  date_to: '',
   min_digg: '',
   min_duration_sec: '',
   max_duration_sec: '',
@@ -214,6 +217,14 @@ export function App() {
     }
     if (forceBookmark) {
       params.set('is_bookmarked', 'true')
+    } else if (filters.is_bookmarked !== '') {
+      params.set('is_bookmarked', filters.is_bookmarked)
+    }
+    if (filters.date_from) {
+      params.set('date_from', new Date(filters.date_from).toISOString())
+    }
+    if (filters.date_to) {
+      params.set('date_to', new Date(filters.date_to).toISOString())
     }
     if (filters.bookmark_collection) {
       params.set('bookmark_collection', filters.bookmark_collection)
@@ -1390,6 +1401,7 @@ export function App() {
                       <option value="">Mọi loại tác vụ</option>
                       <option value="TARGET_CRAWL">Quét Mục tiêu (Kênh/Từ khóa/Collect)</option>
                       <option value="SINGLE_CRAWL">Crawl lẻ theo ID / Link</option>
+                      <option value="DOWNLOAD">Tải Media Không Logo (DOWNLOAD)</option>
                     </select>
                     <select
                       className="h-9 rounded-md border bg-background px-3 text-sm"
@@ -1485,9 +1497,7 @@ export function App() {
                               )}
                             </TableCell>
                             <TableCell className="text-right space-x-1">
-                              {(log.status === 'FAILED' ||
-                                log.status === 'CAPTCHA_BLOCKED' ||
-                                log.status === 'SUCCESS') && (
+                              {(log.status === 'FAILED' || log.status === 'CAPTCHA_BLOCKED') && (
                                 <Button
                                   size="sm"
                                   variant="outline"

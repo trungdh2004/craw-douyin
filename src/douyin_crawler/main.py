@@ -75,17 +75,18 @@ def create_app(
         browser_adapter or PlaywrightDouyinBrowserAdapter(),
         browser_profile_directory or get_settings().browser_profile_directory,
     )
+    default_content_adapter = content_adapter or PlaywrightDouyinContentAdapter(sessions)
     download_runner = DownloadRunner(
         sessions,
         browser_session,
-        content_adapter or PlaywrightDouyinContentAdapter(),
+        default_content_adapter,
         media_adapter or HttpxMediaAdapter(),
         downloads_directory or get_settings().downloads_directory,
     )
     crawl_runner = CrawlRunner(
         sessions,
         browser_session,
-        content_adapter or PlaywrightDouyinContentAdapter(),
+        default_content_adapter,
         media_adapter or HttpxMediaAdapter(),
         covers_directory or get_settings().covers_directory,
         download_callback=download_runner.start,
@@ -117,7 +118,7 @@ def create_app(
     app.include_router(create_videos_router(sessions))
     app.include_router(create_bookmarks_router(sessions, target_service))
     app.include_router(create_downloads_router(download_runner))
-    app.include_router(create_logs_router(sessions, crawl_runner))
+    app.include_router(create_logs_router(sessions, crawl_runner, download_runner))
     app.include_router(create_anti_bot_router(sessions))
 
     @app.get("/api/health")

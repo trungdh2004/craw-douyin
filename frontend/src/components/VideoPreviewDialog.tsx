@@ -320,6 +320,22 @@ export function VideoPreviewDialog({
                 {copied ? <Check className="size-3.5 mr-1" /> : <Copy className="size-3.5 mr-1" />}
                 Copy ID
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleCopy(video.original_url)}
+              >
+                <Copy className="size-3.5 mr-1" /> Copy Link gốc
+              </Button>
+              {video.video_local_path && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleCopy(video.video_local_path || '')}
+                >
+                  <Copy className="size-3.5 mr-1" /> Copy Đường dẫn file
+                </Button>
+              )}
               <Button size="sm" variant="outline" asChild>
                 <a href={video.original_url} target="_blank" rel="noreferrer">
                   <ExternalLink className="size-3.5 mr-1" /> Mở Douyin gốc

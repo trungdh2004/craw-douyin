@@ -168,10 +168,12 @@ class TargetService:
         if trigger is None:
             self._remove_schedule(target.id)
             return
+        trigger_type = "ONCE" if target.schedule_type == ScheduleType.ONCE.value else "SCHEDULED"
         self._scheduler.add_job(
             self._run_target,
             trigger,
             args=[target.id],
+            kwargs={"trigger_type": trigger_type},
             id=self._job_id(target.id),
             replace_existing=True,
         )

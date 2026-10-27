@@ -6,7 +6,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from douyin_crawler.crawler import CrawlRunner
-from douyin_crawler.models import CrawlLog, CrawlTarget
+from douyin_crawler.downloads import DownloadRunner
+from douyin_crawler.models import CrawlLog, CrawlTarget, DouyinVideo
 
 
 class CrawlLogResponse(BaseModel):
@@ -58,6 +59,7 @@ def _to_response(log: CrawlLog, target_name: str | None) -> CrawlLogResponse:
 def create_logs_router(
     sessions: async_sessionmaker[AsyncSession],
     crawl_runner: CrawlRunner,
+    download_runner: DownloadRunner | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/logs", tags=["logs"])
 
@@ -88,7 +90,36 @@ def create_logs_router(
         async with sessions() as session:
             total = await session.scalar(count_stmt) or 0
             rows = (await session.execute(statement)).all()
-        items = [_to_response(log, name) for log, name in rows]
+            items = [_to_response(log, name) for log, name in rows]
+            if job_type == "DOWNLOAD" and not items:
+                dl_videos = list(
+                    await session.scalars(
+                        select(DouyinVideo)
+                        .where(DouyinVideo.download_status == "COMPLETED")
+                        .order_by(DouyinVideo.downloaded_at.desc())
+                        .limit(page_size)
+                    )
+                )
+                for idx, video in enumerate(dl_videos, start=1):
+                    ts = video.downloaded_at or video.updated_at
+                    items.append(
+                        CrawlLogResponse(
+                            id=-idx,
+                            target_id=video.target_id,
+                            target_name=video.author_nickname,
+                            job_type="DOWNLOAD",
+                            trigger_type="MANUAL",
+                            input_summary=f"Tải media: {video.aweme_id}",
+                            started_at=ts,
+                            finished_at=ts,
+                            duration_ms=0,
+                            status="SUCCESS",
+                            new_videos_count=0,
+                            updated_videos_count=1,
+                            error_message=None,
+                        )
+                    )
+                total = len(items)
         return CrawlLogPage(items=items, total=total, page=page, page_size=page_size)
 
     @router.post("/{log_id}/retry", status_code=202)
@@ -97,6 +128,11 @@ def create_logs_router(
             log = await session.get(CrawlLog, log_id)
             if log is None:
                 raise HTTPException(status_code=404, detail="Crawl log not found")
+            if log.status not in ("FAILED", "CAPTCHA_BLOCKED"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only FAILED or CAPTCHA_BLOCKED logs can be retried",
+                )
             job_type = log.job_type
             target_id = log.target_id
             payload = dict(log.payload or {})
@@ -105,6 +141,13 @@ def create_logs_router(
             if job_type == "TARGET_CRAWL" and target_id is not None:
                 crawl_runner.start(target_id, trigger_type="RETRY")
                 return {"status": "ACCEPTED", "target_id": target_id}
+
+            if job_type == "DOWNLOAD":
+                aweme_id = str(payload.get("aweme_id") or "")
+                if not aweme_id or download_runner is None:
+                    raise HTTPException(status_code=400, detail="Missing aweme_id for download retry")
+                await download_runner.start(aweme_id, trigger_type="RETRY", record_log=True)
+                return {"status": "ACCEPTED", "aweme_id": aweme_id}
 
             inputs = list(payload.get("inputs") or [])
             new_log = CrawlLog(
@@ -143,7 +186,9 @@ def create_logs_router(
     async def clear_logs() -> dict[str, int]:
         async with sessions() as session:
             result = await session.execute(
-                delete(CrawlLog).where(CrawlLog.status != "RUNNING")
+                delete(CrawlLog).where(
+                    CrawlLog.status.in_(["SUCCESS", "FAILED", "CAPTCHA_BLOCKED"])
+                )
             )
             await session.commit()
             deleted = int(getattr(result, "rowcount", 0) or 0)

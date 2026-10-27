@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from douyin_crawler.browser import BrowserSessionManager
 from douyin_crawler.crawler import DouyinContentAdapter, MediaHttpAdapter
-from douyin_crawler.models import DouyinVideo
+from douyin_crawler.models import CrawlLog, DouyinVideo
 
 
 class BatchDownloadRequest(BaseModel):
@@ -32,7 +32,13 @@ class DownloadRunner:
         self._directory = downloads_directory
         self._tasks: set[asyncio.Task[None]] = set()
 
-    async def start(self, aweme_id: str) -> None:
+    async def start(
+        self,
+        aweme_id: str,
+        *,
+        trigger_type: str = "MANUAL",
+        record_log: bool = False,
+    ) -> None:
         async with self._sessions() as session:
             video = await session.get(DouyinVideo, aweme_id)
             if video is None:
@@ -42,7 +48,9 @@ class DownloadRunner:
             video.download_status = "DOWNLOADING"
             video.download_error = None
             await session.commit()
-        task = asyncio.create_task(self._download(aweme_id))
+        task = asyncio.create_task(
+            self._download(aweme_id, trigger_type=trigger_type, record_log=record_log)
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -50,7 +58,14 @@ class DownloadRunner:
         if self._tasks:
             await asyncio.gather(*self._tasks)
 
-    async def _download(self, aweme_id: str) -> None:
+    async def _download(
+        self,
+        aweme_id: str,
+        *,
+        trigger_type: str = "MANUAL",
+        record_log: bool = False,
+    ) -> None:
+        started_at = datetime.now(UTC)
         async with self._sessions() as session:
             video = await session.get(DouyinVideo, aweme_id)
             assert video is not None
@@ -84,9 +99,37 @@ class DownloadRunner:
                 video.video_local_path = str(local_path)
                 video.download_status = "COMPLETED"
                 video.downloaded_at = datetime.now(UTC)
+                if record_log or trigger_type == "RETRY":
+                    session.add(
+                        CrawlLog(
+                            target_id=video.target_id,
+                            job_type="DOWNLOAD",
+                            trigger_type=trigger_type,
+                            input_summary=f"Tải media: {aweme_id}",
+                            payload={"aweme_id": aweme_id},
+                            started_at=started_at,
+                            finished_at=datetime.now(UTC),
+                            status="SUCCESS",
+                            new_videos_count=0,
+                            updated_videos_count=1,
+                        )
+                    )
             except Exception as error:
                 video.download_status = "FAILED"
                 video.download_error = str(error)
+                session.add(
+                    CrawlLog(
+                        target_id=video.target_id,
+                        job_type="DOWNLOAD",
+                        trigger_type=trigger_type,
+                        input_summary=f"Tải media: {aweme_id}",
+                        payload={"aweme_id": aweme_id},
+                        started_at=started_at,
+                        finished_at=datetime.now(UTC),
+                        status="FAILED",
+                        error_message=str(error),
+                    )
+                )
             await session.commit()
 
     async def _refresh(self, video: DouyinVideo) -> None:

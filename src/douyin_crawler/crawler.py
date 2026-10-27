@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from douyin_crawler.anti_bot import get_or_create_anti_bot_settings
+from douyin_crawler.anti_bot import PRESET_DEFAULTS, get_or_create_anti_bot_settings
 from douyin_crawler.browser import BrowserSessionManager
 from douyin_crawler.models import CrawlLog, CrawlTarget, DouyinVideo, VideoSource
 
@@ -83,12 +83,7 @@ class PlaywrightDouyinContentAdapter:
     async def _load_anti_bot(self) -> dict[str, Any]:
         if self._sessions is None:
             return {
-                "scroll_delay_min_ms": 1500,
-                "scroll_delay_max_ms": 3500,
-                "stealth_mode": True,
-                "human_scroll": True,
-                "auto_stop_on_captcha": True,
-                "max_pages_per_run": 25,
+                **PRESET_DEFAULTS["BALANCED"],
                 "user_agent": None,
                 "proxy_url": None,
             }
@@ -366,6 +361,8 @@ class CrawlRunner:
                 log.status = target.last_status = "FAILED"
                 log.error_message = str(error)
             log.finished_at = target.last_run_at = datetime.now(UTC)
+            if target.schedule_type == "ONCE":
+                target.is_active = False
             await session.commit()
         if auto_download and self._download_callback is not None:
             for aweme_id in new_ids:

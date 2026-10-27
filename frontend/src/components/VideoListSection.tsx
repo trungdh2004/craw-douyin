@@ -44,6 +44,9 @@ export interface VideoFilterState {
   target_id: string
   aweme_type: string
   download_status: string
+  is_bookmarked: string
+  date_from: string
+  date_to: string
   min_digg: string
   min_duration_sec: string
   max_duration_sec: string
@@ -413,9 +416,23 @@ export function VideoListSection({
 
                 <CardContent className="p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-foreground truncate">
-                      @{video.author_nickname}
-                    </span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {video.author_avatar && (
+                        <img
+                          src={video.author_avatar}
+                          alt={video.author_nickname}
+                          className="size-5 rounded-full object-cover shrink-0"
+                        />
+                      )}
+                      <div className="truncate">
+                        <span className="font-semibold text-foreground">
+                          @{video.author_nickname}
+                        </span>
+                        <span className="ml-1 text-[10px] text-muted-foreground font-mono">
+                          ({video.author_sec_uid})
+                        </span>
+                      </div>
+                    </div>
                     <Badge
                       variant={
                         video.download_status === 'COMPLETED'
@@ -603,6 +620,9 @@ export function VideoListSection({
                     </TableCell>
                     <TableCell className="text-xs">
                       <div className="font-semibold">@{video.author_nickname}</div>
+                      <div className="text-[10px] font-mono text-muted-foreground">
+                        {video.author_sec_uid}
+                      </div>
                       <div className="text-[11px] text-muted-foreground">
                         {video.source_names.join(', ') || 'Crawl lẻ'}
                       </div>

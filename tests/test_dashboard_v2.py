@@ -540,6 +540,11 @@ async def test_operator_can_configure_visual_schedules_auto_download_and_pause_s
                 await app.state.crawl_runner.wait()
                 await app.state.download_runner.wait()
 
+                once_id = once_target.json()["id"]
+                await client.post(f"/api/targets/{once_id}/run")
+                await app.state.crawl_runner.wait()
+                targets_after_once = await client.get("/api/targets")
+
                 videos_after_auto = await client.get("/api/videos")
                 paused_res = await client.post("/api/scheduler/pause")
                 resumed_res = await client.post("/api/scheduler/resume")
@@ -554,6 +559,8 @@ async def test_operator_can_configure_visual_schedules_auto_download_and_pause_s
     assert once_target.status_code == 201
     assert once_target.json()["schedule_type"] == "ONCE"
     assert once_target.json()["next_run_at"] is not None
+    once_after = next(t for t in targets_after_once.json() if t["id"] == once_id)
+    assert once_after["is_active"] is False
     assert videos_after_auto.json()["items"][0]["download_status"] == "COMPLETED"
     assert paused_res.status_code == 200
     assert paused_res.json()["paused"] is True
@@ -682,6 +689,18 @@ class FlakyThenSuccessAdapter:
         raise NotImplementedError
 
 
+class FlakyMediaAdapter:
+    def __init__(self) -> None:
+        self.video_attempts = 0
+
+    async def fetch(self, url: str) -> tuple[int, bytes]:
+        if url.startswith("https://video/"):
+            self.video_attempts += 1
+            if self.video_attempts == 1:
+                return 500, b""
+        return 200, b"media-bytes"
+
+
 async def test_operator_can_filter_retry_and_clear_execution_history(
     tmp_path: Path,
 ) -> None:
@@ -696,7 +715,7 @@ async def test_operator_can_filter_retry_and_clear_execution_history(
             browser_adapter=AuthenticatedBrowserAdapter(),
             browser_profile_directory=tmp_path / "profile",
             content_adapter=FlakyThenSuccessAdapter(),
-            media_adapter=OkMediaAdapter(),
+            media_adapter=FlakyMediaAdapter(),
             covers_directory=tmp_path / "covers",
             downloads_directory=tmp_path / "downloads",
             start_scheduler=False,
@@ -724,6 +743,19 @@ async def test_operator_can_filter_retry_and_clear_execution_history(
                 retried = await client.post(f"/api/logs/{failed_log_id}/retry")
                 await app.state.crawl_runner.wait()
 
+                # Trigger a download that fails on 1st attempt, then retry via /api/logs/{id}/retry
+                await client.post("/api/videos/retry-ok-1/download")
+                await app.state.download_runner.wait()
+                dl_failed_logs = await client.get(
+                    "/api/logs", params={"job_type": "DOWNLOAD", "status": "FAILED"}
+                )
+                dl_failed_id = dl_failed_logs.json()["items"][0]["id"]
+                dl_retried = await client.post(f"/api/logs/{dl_failed_id}/retry")
+                await app.state.download_runner.wait()
+                dl_success_logs = await client.get(
+                    "/api/logs", params={"job_type": "DOWNLOAD", "status": "SUCCESS"}
+                )
+
                 all_logs = await client.get("/api/logs")
                 deleted_single = await client.delete(f"/api/logs/{failed_log_id}")
                 cleared = await client.delete("/api/logs")
@@ -732,11 +764,11 @@ async def test_operator_can_filter_retry_and_clear_execution_history(
     assert failed_logs.json()["total"] == 1
     assert failed_logs.json()["items"][0]["duration_ms"] is not None
     assert retried.status_code == 202
-    assert all_logs.json()["total"] == 2
-    latest_log = all_logs.json()["items"][0]
-    assert latest_log["status"] == "SUCCESS"
-    assert latest_log["trigger_type"] == "RETRY"
-    assert latest_log["new_videos_count"] == 1
+    assert dl_failed_logs.json()["total"] == 1
+    assert dl_retried.status_code == 202
+    assert dl_success_logs.json()["total"] == 1
+    assert dl_success_logs.json()["items"][0]["trigger_type"] == "RETRY"
+    assert all_logs.json()["total"] == 4
     assert deleted_single.status_code == 204
     assert cleared.status_code == 200
     assert empty_logs.json()["total"] == 0

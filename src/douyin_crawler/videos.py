@@ -107,6 +107,8 @@ def create_videos_router(sessions: async_sessionmaker[AsyncSession]) -> APIRoute
         bookmark_collection: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        crawled_from: datetime | None = None,
+        crawled_to: datetime | None = None,
         sort: SortField = "create_time",
         order: Literal["asc", "desc"] = "desc",
         page: int = Query(default=1, ge=1),
@@ -142,6 +144,10 @@ def create_videos_router(sessions: async_sessionmaker[AsyncSession]) -> APIRoute
             statement = statement.where(DouyinVideo.create_time >= date_from)
         if date_to:
             statement = statement.where(DouyinVideo.create_time <= date_to)
+        if crawled_from:
+            statement = statement.where(DouyinVideo.crawled_at >= crawled_from)
+        if crawled_to:
+            statement = statement.where(DouyinVideo.crawled_at <= crawled_to)
         async with sessions() as session:
             total = (
                 await session.scalar(select(func.count()).select_from(statement.subquery()))
