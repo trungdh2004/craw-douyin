@@ -22,7 +22,7 @@ fi
 echo "Đang khởi chạy PostgreSQL..."
 docker compose up -d --wait postgres
 
-echo "Đang cài dependencies..."
+echo "Đang cài dependencies Python..."
 uv sync
 
 echo "Đang cài Chromium..."
@@ -30,5 +30,14 @@ uv run playwright install chromium
 
 echo "Đang cập nhật database..."
 uv run alembic upgrade head
+
+BUN_BIN="$(command -v bun || echo "$HOME/.bun/bin/bun")"
+if [[ -x "$BUN_BIN" ]]; then
+  echo "Đang cài đặt và build Frontend (Vite + shadcn/ui)..."
+  (cd frontend && "$BUN_BIN" install && "$BUN_BIN" run build)
+elif command -v npm >/dev/null 2>&1; then
+  echo "Đang cài đặt và build Frontend (Vite + shadcn/ui)..."
+  (cd frontend && npm install && npm run build)
+fi
 
 echo "Thiết lập hoàn tất. Chạy ./run.sh để mở dự án."

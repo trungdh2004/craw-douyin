@@ -1,10 +1,10 @@
 # Douyin Crawler
 
-Dịch vụ FastAPI hợp nhất cho việc lên lịch thu thập metadata Douyin và tải media theo yêu cầu.
+Hệ thống thu thập metadata Douyin thông minh, quản lý Bookmark, Crawl theo ID/Link, thiết lập Hẹn giờ trực quan, cấu hình Chống Bot (Anti-Bot & Stealth) và tải media không logo theo yêu cầu với giao diện **Left Sidebar Dashboard (Vite + React + TypeScript + TailwindCSS + shadcn/ui)**.
 
 ## Khởi chạy môi trường phát triển
 
-Yêu cầu: Docker, Python 3.12+ và `uv`.
+Yêu cầu: Docker, Python 3.12+, `uv`, và `bun` (hoặc `npm`).
 
 Cài đặt lần đầu:
 
@@ -18,23 +18,25 @@ Sau đó chạy ứng dụng:
 ./run.sh
 ```
 
-Các bước cài đặt thủ công:
+Mở Dashboard tại <http://localhost:8080>. Trạng thái dịch vụ có tại <http://localhost:8080/api/health>.
+
+Chạy riêng Vite Dev Server với Hot-Reload (proxy `/api` về `:8080`):
 
 ```bash
-cp .env.example .env
-docker compose up -d postgres
-uv sync
-uv run playwright install chromium
-uv run alembic upgrade head
-uv run uvicorn douyin_crawler.main:app --reload --port 8080
+cd frontend && bun run dev
 ```
-
-Mở Dashboard tại <http://localhost:8080>. Trạng thái dịch vụ có tại <http://localhost:8080/api/health>.
 
 ## Kiểm thử
 
-Bộ kiểm thử tích hợp cần Docker để tạo PostgreSQL test dùng một lần:
+Kiểm thử tích hợp Backend (PostgreSQL Testcontainers) & Typecheck:
 
 ```bash
 uv run pytest
+uv run mypy
+```
+
+Kiểm thử & Build Frontend (`frontend/`):
+
+```bash
+cd frontend && bun run test && bun run build
 ```

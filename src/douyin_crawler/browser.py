@@ -19,6 +19,7 @@ class BrowserSessionStatus(StrEnum):
     AUTHENTICATED = "AUTHENTICATED"
     LOGIN_REQUIRED = "LOGIN_REQUIRED"
     LOGIN_IN_PROGRESS = "LOGIN_IN_PROGRESS"
+    CAPTCHA_REQUIRED = "CAPTCHA_REQUIRED"
 
 
 class DouyinBrowserAdapter(Protocol):
@@ -38,10 +39,16 @@ class BrowserSessionManager:
             profile_directory.with_name(f"{profile_directory.name}.lock")
         )
         self._login_task: asyncio.Task[None] | None = None
+        self._captcha_required = False
+
+    def mark_captcha_required(self) -> None:
+        self._captcha_required = True
 
     async def get_status(self) -> BrowserSessionStatus:
         if self._login_task is not None and not self._login_task.done():
             return BrowserSessionStatus.LOGIN_IN_PROGRESS
+        if self._captcha_required:
+            return BrowserSessionStatus.CAPTCHA_REQUIRED
         async with self._locked_profile():
             return await self._adapter.get_status(self._profile_directory)
 
@@ -70,6 +77,7 @@ class BrowserSessionManager:
     async def _run_login(self) -> None:
         async with self._locked_profile():
             await self._adapter.open_login(self._profile_directory)
+            self._captcha_required = False
 
     @asynccontextmanager
     async def _locked_profile(self) -> AsyncIterator[None]:

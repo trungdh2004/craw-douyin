@@ -9,3 +9,6 @@ build/
 covers/
 downloads/
 browser-profile/
+browser-profile.lock
+frontend/node_modules/
+frontend/dist/
