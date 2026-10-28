@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%" fill="none">
+  <defs>
+    <!-- Deep Obsidian-Graphite Canvas (Quiet Apple Dark Aesthetic) -->
+    <linearGradient id="bg-canvas" x1="64" y1="24" x2="448" y2="496" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E2028" />
+      <stop offset="48%" stop-color="#131419" />
+      <stop offset="100%" stop-color="#0B0C0E" />
+    </linearGradient>
+
+    <!-- Subtle Ambient Top-Left Specular Glow -->
+    <radialGradient id="ambient-glow" cx="160" cy="112" r="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.10" />
+      <stop offset="55%" stop-color="#9497A1" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Liquid Glass Rim Highlight -->
+    <linearGradient id="glass-rim" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
+      <stop offset="35%" stop-color="#FFFFFF" stop-opacity="0.07" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.03" />
+    </linearGradient>
+
+    <!-- Back Layer: Translucent Slate Echo Wave -->
+    <linearGradient id="layer-back" x1="160" y1="112" x2="408" y2="424" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#9497A1" stop-opacity="0.34" />
+      <stop offset="100%" stop-color="#525665" stop-opacity="0.14" />
+    </linearGradient>
+
+    <!-- Mid Layer: Brushed Titanium Harmonic Arc -->
+    <linearGradient id="layer-mid" x1="140" y1="196" x2="260" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D4D7E0" stop-opacity="0.55" />
+      <stop offset="100%" stop-color="#7E8394" stop-opacity="0.18" />
+    </linearGradient>
+
+    <!-- Front Layer: Primary Ink (Douyin Pulse + Play/Capture Glyph) -->
+    <linearGradient id="layer-front" x1="140" y1="96" x2="360" y2="404" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="65%" stop-color="#ECEDEE" />
+      <stop offset="100%" stop-color="#C8CBD4" />
+    </linearGradient>
+  </defs>
+
+  <!-- 1. Squircle App Icon Base -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg-canvas)" />
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#ambient-glow)" />
+  <rect x="18" y="18" width="476" height="476" rx="110" stroke="url(#glass-rim)" stroke-width="4" />
+
+  <!-- 2. Subtle Radar Indexing Grid (Crawler precision rings) -->
+  <circle cx="256" cy="272" r="164" stroke="#FFFFFF" stroke-opacity="0.045" stroke-width="2" stroke-dasharray="6 10" />
+  <circle cx="256" cy="272" r="120" stroke="#FFFFFF" stroke-opacity="0.055" stroke-width="2" />
+
+  <!-- 3. Back Layer: Offset Translucent Echo Silhouette (+18px X, +14px Y) -->
+  <path
+    d="M272 122
+       C272 113.163 279.163 106 288 106
+       H304
+       C311.5 106 317.8 111.2 319.6 118.5
+       C328.4 154.2 358.5 180.8 396.2 186.2
+       C404.1 187.3 410 194.1 410 202.1
+       V222
+       C410 231.6 401.6 239 392.1 237.7
+       C363.2 233.8 336.9 221.2 316 202.4
+       V310
+       A 100 100 0 1 1 216 210
+       A 23 23 0 0 1 216 256
+       A 54 54 0 1 0 270 310
+       V122Z"
+    fill="url(#layer-back)"
+  />
+
+  <!-- 4. Mid Layer: Translucent Closure Arc completing the upper loop aperture -->
+  <path
+    d="M176 200.8
+       A 100 100 0 0 1 258 214
+       L240 249
+       A 54 54 0 0 0 196 242
+       Z"
+    fill="url(#layer-mid)"
+  />
+
+  <!-- 5. Front Layer: Exact-Tangent Sculpted Douyin Note & Capture Loop -->
+  <!-- Loop center=(198, 296), R_out=100, R_in=54, thickness=46. Stem x=252..298 (width=46, exact tangent!) -->
+  <path
+    d="M252 108
+       C252 99.163 259.163 92 268 92
+       H284
+       C291.5 92 297.8 97.2 299.6 104.5
+       C308.4 140.2 338.5 166.8 376.2 172.2
+       C384.1 173.3 390 180.1 390 188.1
+       V208
+       C390 217.6 381.6 225 372.1 223.7
+       C343.9 219.9 318.2 207.8 298 189.6
+       V296
+       A 100 100 0 1 1 198 196
+       A 23 23 0 0 1 198 242
+       A 54 54 0 1 0 252 296
+       V108Z"
+    fill="url(#layer-front)"
+  />
+
+  <!-- 6. Center Play / Crawl Capture Prism inside the Loop (centered at 198, 296) -->
+  <path
+    d="M181 273.5
+       C181 268.2 186.7 264.9 191.3 267.5
+       L226.8 288.0
+       C231.4 290.7 231.4 297.3 226.8 300.0
+       L191.3 320.5
+       C186.7 323.1 181 319.8 181 314.5
+       V273.5Z"
+    fill="#FFFFFF"
+  />
+
+  <!-- 7. Active Crawler Signal Node (Top-Right Indexing Pulse) -->
+  <circle cx="376" cy="122" r="13" fill="#ECEDEE" fill-opacity="0.92" />
+  <circle cx="376" cy="122" r="24" stroke="#ECEDEE" stroke-opacity="0.22" stroke-width="3" />
+</svg>

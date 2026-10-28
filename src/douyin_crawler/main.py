@@ -3,14 +3,21 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from douyin_crawler.anti_bot import create_anti_bot_router
+from douyin_crawler.auth import (
+    PUBLIC_API_PATHS,
+    create_auth_router,
+    ensure_admin_credentials,
+    get_authenticated_username,
+    is_public_api_path,
+)
 from douyin_crawler.browser import (
     BrowserSessionManager,
     BrowserSessionStatus,
@@ -27,11 +34,16 @@ from douyin_crawler.crawler import (
 )
 from douyin_crawler.database import create_database_engine
 from douyin_crawler.downloads import DownloadRunner, create_downloads_router
+from douyin_crawler.edit_bridge import EditStudioBridge, create_edit_bridge_router
 from douyin_crawler.logs import create_logs_router
 from douyin_crawler.models import CrawlLog, CrawlTarget, DouyinVideo
 from douyin_crawler.settings import get_settings
 from douyin_crawler.targets import TargetService, create_targets_router
-from douyin_crawler.videos import create_bookmarks_router, create_videos_router
+from douyin_crawler.videos import (
+    create_bookmarks_router,
+    create_trends_router,
+    create_videos_router,
+)
 
 
 class BrowserStatusResponse(BaseModel):
@@ -66,6 +78,7 @@ def create_app(
     downloads_directory: Path | None = None,
     start_scheduler: bool = True,
     load_schedules: bool = True,
+    require_auth: bool = False,
 ) -> FastAPI:
     scheduler = AsyncIOScheduler()
     engine = create_database_engine(database_url)
@@ -92,9 +105,44 @@ def create_app(
         download_callback=download_runner.start,
     )
     target_service = TargetService(sessions, scheduler, crawl_runner.start)
+    edit_bridge = EditStudioBridge(
+        sessions,
+        browser_session,
+        default_content_adapter,
+        download_runner,
+        edit_douyin_url=get_settings().edit_douyin_url,
+        edit_douyin_directory=get_settings().edit_douyin_directory,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE douyin_videos "
+                        "ADD COLUMN IF NOT EXISTS edit_item_id VARCHAR(64), "
+                        "ADD COLUMN IF NOT EXISTS edit_list_id VARCHAR(64), "
+                        "ADD COLUMN IF NOT EXISTS edit_sent_at TIMESTAMPTZ, "
+                        "ADD COLUMN IF NOT EXISTS edit_status VARCHAR(32), "
+                        "ADD COLUMN IF NOT EXISTS edit_error TEXT"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE anti_bot_settings "
+                        "ADD COLUMN IF NOT EXISTS edit_studio_host VARCHAR(255) DEFAULT '127.0.0.1' NOT NULL, "
+                        "ADD COLUMN IF NOT EXISTS edit_studio_port INTEGER DEFAULT 8000 NOT NULL, "
+                        "ADD COLUMN IF NOT EXISTS headless_mode BOOLEAN DEFAULT false NOT NULL, "
+                        "ADD COLUMN IF NOT EXISTS admin_username VARCHAR(128) DEFAULT 'admin' NOT NULL, "
+                        "ADD COLUMN IF NOT EXISTS admin_password_hash TEXT, "
+                        "ADD COLUMN IF NOT EXISTS admin_session_secret VARCHAR(128)"
+                    )
+                )
+            async with sessions() as session:
+                await ensure_admin_credentials(session)
+        except Exception:
+            pass
         if start_scheduler:
             scheduler.start()
         app.state.scheduler = scheduler
@@ -104,6 +152,7 @@ def create_app(
         app.state.target_service = target_service
         app.state.crawl_runner = crawl_runner
         app.state.download_runner = download_runner
+        app.state.edit_bridge = edit_bridge
         if load_schedules:
             await target_service.synchronize_schedules()
         yield
@@ -113,10 +162,26 @@ def create_app(
         await engine.dispose()
 
     app = FastAPI(title="Douyin Crawler", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def admin_auth_middleware(request: Request, call_next):
+        path = request.url.path
+        if require_auth and path.startswith("/api") and not is_public_api_path(path):
+            username = await get_authenticated_username(request, sessions)
+            if not username:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Vui lòng đăng nhập để truy cập hệ thống"},
+                )
+        return await call_next(request)
+
+    app.include_router(create_auth_router(sessions))
     app.include_router(create_targets_router(target_service))
     app.include_router(create_crawl_router(sessions, crawl_runner, scheduler))
+    app.include_router(create_edit_bridge_router(edit_bridge))
     app.include_router(create_videos_router(sessions))
     app.include_router(create_bookmarks_router(sessions, target_service))
+    app.include_router(create_trends_router(sessions))
     app.include_router(create_downloads_router(download_runner))
     app.include_router(create_logs_router(sessions, crawl_runner, download_runner))
     app.include_router(create_anti_bot_router(sessions))
@@ -235,13 +300,28 @@ def create_app(
             jobs_count=len(scheduler.get_jobs()),
         )
 
-    frontend_dist = Path(__file__).parents[2] / "frontend" / "dist"
+    frontend_root = Path(__file__).parents[2] / "frontend"
+    frontend_dist = frontend_root / "dist"
+    frontend_public = frontend_root / "public"
     if (frontend_dist / "assets").is_dir():
         app.mount(
             "/assets",
             StaticFiles(directory=str(frontend_dist / "assets")),
             name="frontend_assets",
         )
+
+    brand_static_files = {
+        "favicon.svg": "image/svg+xml",
+        "favicon.ico": "image/x-icon",
+        "favicon-16x16.png": "image/png",
+        "favicon-32x32.png": "image/png",
+        "apple-touch-icon.png": "image/png",
+        "icon-192.png": "image/png",
+        "icon-512.png": "image/png",
+        "logo.svg": "image/svg+xml",
+        "logo-lockup.svg": "image/svg+xml",
+        "site.webmanifest": "application/manifest+json",
+    }
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:
@@ -251,7 +331,18 @@ def create_app(
         template = Path(__file__).parent / "templates" / "dashboard.html"
         return HTMLResponse(template.read_text(encoding="utf-8"))
 
+    @app.get("/{asset_name}")
+    async def serve_root_brand_asset(asset_name: str) -> FileResponse:
+        media_type = brand_static_files.get(asset_name)
+        if not media_type:
+            raise HTTPException(status_code=404, detail="Not Found")
+        for folder in (frontend_dist, frontend_public):
+            candidate = folder / asset_name
+            if candidate.is_file():
+                return FileResponse(candidate, media_type=media_type)
+        raise HTTPException(status_code=404, detail="Not Found")
+
     return app
 
 
-app = create_app()
+app = create_app(require_auth=True)

@@ -13,7 +13,7 @@ function DialogPortal({ ...props }: React.ComponentProps<typeof DialogPrimitive.
 function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
     <DialogPrimitive.Overlay
-      className={cn("fixed inset-0 z-50 bg-black/70 backdrop-blur-sm", className)}
+      className={cn("fixed inset-0 z-50 bg-black/65 backdrop-blur-[4px]", className)}
       {...props}
     />
   )
@@ -25,7 +25,7 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-6xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-y-auto rounded-xl border bg-background p-0 shadow-2xl outline-none",
+          "lg-regular fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-6xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-y-auto rounded-2xl p-6 text-foreground outline-none",
           className,
         )}
         {...props}
@@ -37,11 +37,11 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
 }
 
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("flex flex-col gap-1.5 border-b px-6 py-4", className)} {...props} />
+  return <div className={cn("flex flex-col gap-1.5 border-b border-border/70 pb-4", className)} {...props} />
 }
 
 function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
-  return <DialogPrimitive.Title className={cn("text-base font-semibold", className)} {...props} />
+  return <DialogPrimitive.Title className={cn("text-base font-semibold tracking-tight", className)} {...props} />
 }
 
 function DialogDescription({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Description>) {
@@ -49,7 +49,7 @@ function DialogDescription({ className, ...props }: React.ComponentProps<typeof 
 }
 
 function DialogFooter({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("flex items-center justify-end gap-2 border-t px-6 py-4", className)} {...props} />
+  return <div className={cn("flex items-center justify-end gap-2 border-t border-border/70 pt-4", className)} {...props} />
 }
 
 export { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle }

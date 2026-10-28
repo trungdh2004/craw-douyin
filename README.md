@@ -1,5 +1,9 @@
 # Douyin Crawler
 
+<p align="center">
+  <img src="frontend/public/logo-lockup.svg" alt="Douyin Crawler Brand Banner" width="680" />
+</p>
+
 Hệ thống thu thập metadata Douyin thông minh, quản lý Bookmark, Crawl theo ID/Link, thiết lập Hẹn giờ trực quan, cấu hình Chống Bot (Anti-Bot & Stealth) và tải media không logo theo yêu cầu với giao diện **Left Sidebar Dashboard (Vite + React + TypeScript + TailwindCSS + shadcn/ui)**.
 
 ## Khởi chạy môi trường phát triển

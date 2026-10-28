@@ -58,9 +58,12 @@ class AntiBotSettingsResponse(BaseModel):
     stealth_mode: bool
     human_scroll: bool
     auto_stop_on_captcha: bool
+    headless_mode: bool = False
     max_pages_per_run: int
     user_agent: str | None
     proxy_url: str | None
+    edit_studio_host: str = "127.0.0.1"
+    edit_studio_port: int = 8000
     updated_at: datetime
 
 
@@ -74,9 +77,44 @@ class AntiBotSettingsUpdate(BaseModel):
     stealth_mode: bool | None = None
     human_scroll: bool | None = None
     auto_stop_on_captcha: bool | None = None
+    headless_mode: bool | None = None
     max_pages_per_run: int | None = Field(default=None, ge=1, le=500)
     user_agent: str | None = None
     proxy_url: str | None = None
+    edit_studio_host: str | None = None
+    edit_studio_port: int | None = Field(default=None, ge=1, le=65535)
+
+
+class EditStudioConfigResponse(BaseModel):
+    host: str
+    port: int
+    base_url: str
+    updated_at: datetime
+
+
+class EditStudioConfigUpdate(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+
+
+def format_edit_studio_base_url(host: str | None, port: int | None) -> str:
+    clean_host = (host or "127.0.0.1").strip().rstrip("/")
+    clean_port = int(port or 8000)
+    if clean_host.startswith("http://") or clean_host.startswith("https://"):
+        # Strip trailing port if user pasted full URL with port
+        scheme, rest = clean_host.split("://", 1)
+        host_only = rest.split("/")[0].split(":")[0]
+        return f"{scheme}://{host_only}:{clean_port}"
+    host_only = clean_host.split("/")[0].split(":")[0]
+    return f"http://{host_only}:{clean_port}"
+
+
+def normalize_host_input(raw_host: str) -> str:
+    clean = raw_host.strip().rstrip("/")
+    if clean.startswith("http://") or clean.startswith("https://"):
+        _, rest = clean.split("://", 1)
+        return rest.split("/")[0].split(":")[0] or "127.0.0.1"
+    return clean.split("/")[0].split(":")[0] or "127.0.0.1"
 
 
 async def get_or_create_anti_bot_settings(session: AsyncSession) -> AntiBotSettings:
@@ -113,6 +151,8 @@ def create_anti_bot_router(
                     setattr(settings, key, val)
             for key, value in updates.items():
                 setattr(settings, key, value)
+            if "edit_studio_host" in updates and updates["edit_studio_host"]:
+                settings.edit_studio_host = normalize_host_input(str(updates["edit_studio_host"]))
             if settings.scroll_delay_max_ms < settings.scroll_delay_min_ms:
                 settings.scroll_delay_max_ms = settings.scroll_delay_min_ms
             if settings.download_delay_max_ms < settings.download_delay_min_ms:
@@ -121,5 +161,38 @@ def create_anti_bot_router(
             await session.commit()
             await session.refresh(settings)
             return AntiBotSettingsResponse.model_validate(settings)
+
+    @router.get("/edit-studio")
+    async def get_edit_studio_config() -> EditStudioConfigResponse:
+        async with sessions() as session:
+            settings = await get_or_create_anti_bot_settings(session)
+            host = settings.edit_studio_host or "127.0.0.1"
+            port = settings.edit_studio_port or 8000
+            return EditStudioConfigResponse(
+                host=host,
+                port=port,
+                base_url=format_edit_studio_base_url(host, port),
+                updated_at=settings.updated_at,
+            )
+
+    @router.put("/edit-studio")
+    async def update_edit_studio_config(
+        payload: EditStudioConfigUpdate,
+    ) -> EditStudioConfigResponse:
+        async with sessions() as session:
+            settings = await get_or_create_anti_bot_settings(session)
+            settings.edit_studio_host = normalize_host_input(payload.host)
+            settings.edit_studio_port = payload.port
+            settings.updated_at = datetime.now(UTC)
+            await session.commit()
+            await session.refresh(settings)
+            return EditStudioConfigResponse(
+                host=settings.edit_studio_host,
+                port=settings.edit_studio_port,
+                base_url=format_edit_studio_base_url(
+                    settings.edit_studio_host, settings.edit_studio_port
+                ),
+                updated_at=settings.updated_at,
+            )
 
     return router

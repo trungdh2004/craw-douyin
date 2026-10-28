@@ -10,6 +10,13 @@ from douyin_crawler.downloads import DownloadRunner
 from douyin_crawler.models import CrawlLog, CrawlTarget, DouyinVideo
 
 
+class CrawlLogEventItem(BaseModel):
+    ts: str
+    level: str
+    step: str
+    message: str
+
+
 class CrawlLogResponse(BaseModel):
     id: int
     target_id: int | None
@@ -23,6 +30,10 @@ class CrawlLogResponse(BaseModel):
     status: str
     new_videos_count: int
     updated_videos_count: int
+    scanned_count: int = 0
+    target_limit: int = 0
+    current_phase: str | None = None
+    events: list[CrawlLogEventItem] = []
     error_message: str | None
 
 
@@ -39,6 +50,27 @@ def _to_response(log: CrawlLog, target_name: str | None) -> CrawlLogResponse:
         duration_ms = max(
             0, int((log.finished_at - log.started_at).total_seconds() * 1000)
         )
+    payload = dict(log.payload or {})
+    raw_events = payload.get("events") or []
+    events: list[CrawlLogEventItem] = []
+    for item in raw_events:
+        if isinstance(item, dict):
+            events.append(
+                CrawlLogEventItem(
+                    ts=str(item.get("ts") or ""),
+                    level=str(item.get("level") or "INFO"),
+                    step=str(item.get("step") or "STEP"),
+                    message=str(item.get("message") or ""),
+                )
+            )
+    scanned_count = int(
+        payload.get("scanned_count")
+        or (log.new_videos_count + log.updated_videos_count)
+    )
+    target_limit = int(payload.get("target_limit") or 0)
+    current_phase = (
+        str(payload["current_phase"]) if payload.get("current_phase") else None
+    )
     return CrawlLogResponse(
         id=log.id,
         target_id=log.target_id,
@@ -52,6 +84,10 @@ def _to_response(log: CrawlLog, target_name: str | None) -> CrawlLogResponse:
         status=log.status,
         new_videos_count=log.new_videos_count,
         updated_videos_count=log.updated_videos_count,
+        scanned_count=scanned_count,
+        target_limit=target_limit,
+        current_phase=current_phase,
+        events=events,
         error_message=log.error_message,
     )
 
@@ -121,6 +157,21 @@ def create_logs_router(
                     )
                 total = len(items)
         return CrawlLogPage(items=items, total=total, page=page, page_size=page_size)
+
+    @router.get("/{log_id}")
+    async def get_log_detail(log_id: int) -> CrawlLogResponse:
+        async with sessions() as session:
+            row = (
+                await session.execute(
+                    select(CrawlLog, CrawlTarget.name)
+                    .outerjoin(CrawlTarget, CrawlTarget.id == CrawlLog.target_id)
+                    .where(CrawlLog.id == log_id)
+                )
+            ).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Crawl log not found")
+            log, name = row
+            return _to_response(log, name)
 
     @router.post("/{log_id}/retry", status_code=202)
     async def retry_log(log_id: int) -> dict[str, object]:

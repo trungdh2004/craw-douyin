@@ -17,6 +17,9 @@ dependencies = [
     "uvicorn[standard]>=0.38,<1",
 ]
 
+[project.scripts]
+douyin-mcp = "douyin_crawler.mcp_server:main"
+
 [dependency-groups]
 dev = [
     "httpx>=0.28,<1",

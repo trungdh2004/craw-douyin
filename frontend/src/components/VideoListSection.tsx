@@ -1,22 +1,17 @@
 import { useState } from 'react'
 import {
   Bookmark,
-  Calendar,
-  Clock,
   Download,
   ExternalLink,
-  Eye,
   Film,
-  Heart,
-  Image as ImageIcon,
   LayoutGrid,
   List,
-  MessageCircle,
-  Music,
   RefreshCw,
+  RotateCcw,
   Search,
-  Share2,
+  Settings2,
   Star,
+  Trash2,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -33,6 +28,8 @@ import {
 import {
   type BookmarkCollection,
   type CrawlTargetItem,
+  type SuggestedTopicItem,
+  type TrendsResponse,
   type VideoItem,
   formatDateTime,
   formatDurationMs,
@@ -45,6 +42,8 @@ export interface VideoFilterState {
   aweme_type: string
   download_status: string
   is_bookmarked: string
+  is_analyzed?: string
+  edit_status?: string
   date_from: string
   date_to: string
   min_digg: string
@@ -64,7 +63,12 @@ interface VideoListSectionProps {
   pageSize: number
   targets: CrawlTargetItem[]
   collections?: BookmarkCollection[]
+  trends?: TrendsResponse | null
   bookmarkOnly?: boolean
+  analyzedOnly?: boolean
+  editStudioBaseUrl?: string
+  onOpenStudioSettings?: () => void
+  onClearEditStatus?: (awemeId: string) => Promise<void>
   filters: VideoFilterState
   onFiltersChange: (next: VideoFilterState) => void
   onRefresh: () => Promise<void>
@@ -74,6 +78,9 @@ interface VideoListSectionProps {
   onBatchBookmark: (awemeIds: string[], isBookmarked: boolean, collection?: string) => Promise<void>
   onPreview: (video: VideoItem) => void
   onSyncDouyinCollect?: () => Promise<void>
+  onQuickCrawlTopic?: (topic: SuggestedTopicItem) => Promise<void>
+  onSendToEdit?: (awemeIds: string[]) => Promise<void>
+  sendingEditIds?: string[]
 }
 
 export function VideoListSection({
@@ -84,7 +91,12 @@ export function VideoListSection({
   pageSize,
   targets,
   collections = [],
+  trends = null,
   bookmarkOnly = false,
+  analyzedOnly = false,
+  editStudioBaseUrl = 'http://127.0.0.1:8000',
+  onOpenStudioSettings,
+  onClearEditStatus,
   filters,
   onFiltersChange,
   onRefresh,
@@ -94,6 +106,9 @@ export function VideoListSection({
   onBatchBookmark,
   onPreview,
   onSyncDouyinCollect,
+  onQuickCrawlTopic,
+  onSendToEdit,
+  sendingEditIds = [],
 }: VideoListSectionProps) {
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -120,50 +135,106 @@ export function VideoListSection({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
-          <p className="text-sm text-muted-foreground">{subtitle}</p>
+          <h1 className="text-lg font-semibold tracking-tight text-foreground">{title}</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {bookmarkOnly && onSyncDouyinCollect && (
-            <Button variant="secondary" size="sm" onClick={() => void onSyncDouyinCollect()}>
-              <Bookmark className="size-4 mr-1.5 text-amber-400" />
+            <Button variant="outline" size="sm" onClick={() => void onSyncDouyinCollect()}>
+              <Bookmark className="size-3.5 mr-1.5" />
               Đồng bộ mục Đã lưu từ Douyin
             </Button>
           )}
-          <div className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+          {analyzedOnly && onOpenStudioSettings && (
+            <Button variant="outline" size="sm" onClick={onOpenStudioSettings}>
+              <Settings2 className="size-3.5 mr-1.5" />
+              Server: {editStudioBaseUrl.replace(/^https?:\/\//, '')}
+            </Button>
+          )}
+          <div
+            role="group"
+            aria-label="Chế độ hiển thị"
+            className="inline-flex rounded-lg border border-border bg-muted/60 p-0.5"
+          >
             <Button
               size="sm"
-              variant={viewMode === 'grid' ? 'default' : 'ghost'}
-              className="h-7 px-2.5 text-xs"
+              variant="ghost"
+              className={`h-7 px-2.5 text-xs ${
+                viewMode === 'grid' ? 'bg-card shadow-2xs text-foreground' : 'text-muted-foreground'
+              }`}
               onClick={() => setViewMode('grid')}
             >
-              <LayoutGrid className="size-3.5 mr-1" /> Lưới Card
+              <LayoutGrid className="size-3.5 mr-1.5" /> Lưới
             </Button>
             <Button
               size="sm"
-              variant={viewMode === 'table' ? 'default' : 'ghost'}
-              className="h-7 px-2.5 text-xs"
+              variant="ghost"
+              className={`h-7 px-2.5 text-xs ${
+                viewMode === 'table' ? 'bg-card shadow-2xs text-foreground' : 'text-muted-foreground'
+              }`}
               onClick={() => setViewMode('table')}
             >
-              <List className="size-3.5 mr-1" /> Bảng Metadata
+              <List className="size-3.5 mr-1.5" /> Bảng
             </Button>
           </div>
           <Button variant="outline" size="sm" onClick={() => void onRefresh()}>
-            <RefreshCw className="size-4 mr-1.5" /> Làm mới
+            <RefreshCw className="size-3.5 mr-1.5" /> Làm mới
           </Button>
         </div>
       </div>
 
+      {/* Thanh lọc nhanh theo Hashtag & Chủ đề — tối giản, không màu mè */}
+      {trends &&
+        ((trends.trending_hashtags?.length ?? 0) > 0 ||
+          (trends.suggested_topics?.length ?? 0) > 0) && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            {(trends.trending_hashtags ?? []).slice(0, 8).map((item) => {
+              const active = filters.search === item.tag
+              return (
+                <button
+                  key={item.tag}
+                  type="button"
+                  onClick={() => updateFilter({ search: active ? '' : item.tag })}
+                  className={`inline-flex min-h-[28px] items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition ${
+                    active
+                      ? 'bg-primary text-primary-foreground border-primary font-medium'
+                      : 'bg-card border-border text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <span>#{item.tag}</span>
+                  <span className="font-mono tabular-nums text-[11px] opacity-60">
+                    {item.video_count}
+                  </span>
+                </button>
+              )
+            })}
+            {!bookmarkOnly &&
+              (trends.suggested_topics ?? []).slice(0, 5).map((topic) => (
+                <button
+                  key={topic.keyword}
+                  type="button"
+                  onClick={() =>
+                    onQuickCrawlTopic
+                      ? void onQuickCrawlTopic(topic)
+                      : updateFilter({ search: topic.keyword })
+                  }
+                  className="inline-flex min-h-[28px] items-center gap-1 rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
+                  title={`Quét chủ đề ${topic.label}`}
+                >
+                  <span>+ {topic.label}</span>
+                </button>
+              ))}
+          </div>
+        )}
+
       {bookmarkOnly && collections.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">Bộ sưu tập:</span>
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button
             size="sm"
             variant={filters.bookmark_collection === '' ? 'default' : 'outline'}
-            className="h-7 text-xs"
             onClick={() => updateFilter({ bookmark_collection: '' })}
           >
             Tất cả ({total})
@@ -173,7 +244,6 @@ export function VideoListSection({
               key={col.name}
               size="sm"
               variant={filters.bookmark_collection === col.name ? 'default' : 'outline'}
-              className="h-7 text-xs"
               onClick={() => updateFilter({ bookmark_collection: col.name })}
             >
               {col.name} ({col.count})
@@ -182,115 +252,132 @@ export function VideoListSection({
         </div>
       )}
 
-      <Card>
-        <CardContent className="p-4 space-y-3">
-          <div className="grid gap-2.5 md:grid-cols-6">
-            <div className="relative md:col-span-2">
-              <Search className="size-4 absolute left-2.5 top-2.5 text-muted-foreground" />
+      {analyzedOnly && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {(
+            [
+              { value: '', label: `Tất cả (${total})` },
+              { value: 'SENT', label: 'Đã gửi thành công' },
+              { value: 'FAILED', label: 'Gửi lỗi' },
+            ] as const
+          ).map((tab) => (
+            <Button
+              key={tab.value || 'ALL'}
+              size="sm"
+              variant={(filters.edit_status ?? '') === tab.value ? 'default' : 'outline'}
+              onClick={() => updateFilter({ edit_status: tab.value })}
+            >
+              {tab.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* Bộ lọc gọn nhẹ */}
+      <Card className="surface-standard">
+        <CardContent className="p-3 space-y-2">
+          <div className="grid gap-2 md:grid-cols-6">
+            <div className={analyzedOnly || bookmarkOnly ? 'relative md:col-span-2' : 'relative md:col-span-1'}>
+              <Search className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground pointer-events-none" />
               <Input
-                className="pl-8"
-                placeholder="Tìm theo mô tả, hashtag..."
+                aria-label="Tìm theo mô tả hoặc hashtag"
+                className="pl-8 h-8 text-xs"
+                placeholder="Tìm mô tả, hashtag..."
                 value={filters.search}
                 onChange={(e) => updateFilter({ search: e.target.value })}
               />
             </div>
             <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+              aria-label="Lọc theo nguồn quét"
+              className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
               value={filters.target_id}
               onChange={(e) => updateFilter({ target_id: e.target.value })}
             >
               <option value="">Mọi nguồn quét</option>
               {targets.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {t.name} ({t.target_type})
+                  {t.name}
                 </option>
               ))}
             </select>
             <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+              aria-label="Lọc theo định dạng"
+              className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
               value={filters.aweme_type}
               onChange={(e) => updateFilter({ aweme_type: e.target.value })}
             >
               <option value="">Mọi định dạng</option>
-              <option value="0">🎬 Video (.mp4)</option>
-              <option value="68">📷 Album ảnh trượt</option>
+              <option value="0">Video (.mp4)</option>
+              <option value="68">Album ảnh</option>
             </select>
             <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+              aria-label="Lọc theo trạng thái tải"
+              className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
               value={filters.download_status}
               onChange={(e) => updateFilter({ download_status: e.target.value })}
             >
               <option value="">Mọi trạng thái tải</option>
-              <option value="NONE">Chưa tải (NONE)</option>
-              <option value="DOWNLOADING">Đang tải (DOWNLOADING)</option>
-              <option value="COMPLETED">Đã tải xong (COMPLETED)</option>
-              <option value="FAILED">Lỗi tải (FAILED)</option>
+              <option value="NONE">Chưa tải</option>
+              <option value="COMPLETED">Đã tải xong</option>
+              <option value="FAILED">Lỗi tải</option>
             </select>
-            <Input
-              type="number"
-              min={0}
-              placeholder="Tim tối thiểu..."
-              value={filters.min_digg}
-              onChange={(e) => updateFilter({ min_digg: e.target.value })}
-            />
-          </div>
-
-          <div className="grid gap-2.5 md:grid-cols-6 items-center">
-            <Input
-              type="number"
-              min={0}
-              placeholder="Thời lượng từ (giây)"
-              value={filters.min_duration_sec}
-              onChange={(e) => updateFilter({ min_duration_sec: e.target.value })}
-            />
-            <Input
-              type="number"
-              min={0}
-              placeholder="Thời lượng đến (giây)"
-              value={filters.max_duration_sec}
-              onChange={(e) => updateFilter({ max_duration_sec: e.target.value })}
-            />
+            {!bookmarkOnly && !analyzedOnly && (
+              <select
+                aria-label="Lọc theo trạng thái phân tích"
+                className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
+                value={filters.is_analyzed ?? ''}
+                onChange={(e) => updateFilter({ is_analyzed: e.target.value })}
+              >
+                <option value="">Mọi trạng thái phân tích</option>
+                <option value="true">Đã gửi phân tích</option>
+                <option value="false">Chưa gửi phân tích</option>
+              </select>
+            )}
             <select
-              className="h-9 rounded-md border bg-background px-3 text-sm md:col-span-2"
+              aria-label="Tiêu chí sắp xếp"
+              className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
               value={filters.sort}
               onChange={(e) => updateFilter({ sort: e.target.value })}
             >
-              <option value="create_time">Sắp xếp: Thời gian đăng bài</option>
-              <option value="crawled_at">Sắp xếp: Thời gian crawl về</option>
-              <option value="duration_ms">Sắp xếp: Thời lượng video (MM:SS)</option>
-              <option value="digg_count">Sắp xếp: Lượt tim (❤)</option>
-              <option value="comment_count">Sắp xếp: Bình luận (💬)</option>
-              <option value="share_count">Sắp xếp: Chia sẻ (↗)</option>
-              <option value="collect_count">Sắp xếp: Lượt lưu Douyin (🔖)</option>
+              {analyzedOnly && <option value="edit_sent_at">Mới gửi phân tích</option>}
+              <option value="crawled_at">Mới crawl gần nhất</option>
+              <option value="create_time">Ngày đăng bài</option>
+              <option value="duration_ms">Thời lượng</option>
+              <option value="digg_count">Lượt tim</option>
             </select>
-            <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
-              value={filters.order}
-              onChange={(e) => updateFilter({ order: e.target.value as 'asc' | 'desc' })}
-            >
-              <option value="desc">Giảm dần (Cao → Thấp / Mới nhất)</option>
-              <option value="asc">Tăng dần (Thấp → Cao / Cũ nhất)</option>
-            </select>
-            <div className="text-right text-xs text-muted-foreground">
-              Tổng cộng: <strong className="text-foreground">{total}</strong> bài đăng
-            </div>
           </div>
 
           {selectedIds.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-              <Badge variant="default">Đã chọn {selectedIds.length} bài</Badge>
+            <div className="lg-regular flex flex-wrap items-center gap-2 rounded-xl p-2 mt-1">
+              <span className="text-xs font-medium px-2 font-mono tabular-nums">
+                Đã chọn {selectedIds.length}
+              </span>
+              {onSendToEdit && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  disabled={selectedIds.some((id) => sendingEditIds.includes(id))}
+                  onClick={() => {
+                    void onSendToEdit(selectedIds)
+                    setSelectedIds([])
+                  }}
+                >
+                  Phân tích & Dịch ({selectedIds.length})
+                </Button>
+              )}
               <Button
                 size="sm"
+                variant="outline"
                 onClick={() => {
                   void onBatchDownload(selectedIds)
                   setSelectedIds([])
                 }}
               >
-                <Download className="size-3.5 mr-1.5" /> Tải hàng loạt ({selectedIds.length})
+                <Download className="size-3.5 mr-1.5" /> Tải ({selectedIds.length})
               </Button>
               <Input
-                className="h-8 w-48 text-xs"
-                placeholder="Nhãn Bookmark hàng loạt..."
+                className="h-7 w-40 text-xs"
+                placeholder="Nhãn Bookmark..."
                 value={batchCollection}
                 onChange={(e) => setBatchCollection(e.target.value)}
               />
@@ -302,21 +389,14 @@ export function VideoListSection({
                   setSelectedIds([])
                 }}
               >
-                <Star className="size-3.5 mr-1 text-amber-400" /> Bookmark đã chọn
+                Bookmark
               </Button>
-              {bookmarkOnly && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    void onBatchBookmark(selectedIds, false)
-                    setSelectedIds([])
-                  }}
-                >
-                  Bỏ Bookmark đã chọn
-                </Button>
-              )}
-              <Button size="sm" variant="ghost" onClick={() => setSelectedIds([])}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                onClick={() => setSelectedIds([])}
+              >
                 Bỏ chọn
               </Button>
             </div>
@@ -325,245 +405,226 @@ export function VideoListSection({
       </Card>
 
       {videos.length === 0 ? (
-        <Card>
-          <CardContent className="py-14 text-center text-muted-foreground">
-            Không tìm thấy bài đăng nào khớp bộ lọc hiện tại.
-          </CardContent>
-        </Card>
+        <div className="py-16 text-center text-muted-foreground text-sm">
+          Không tìm thấy bài đăng nào khớp bộ lọc hiện tại.
+        </div>
       ) : viewMode === 'grid' ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {videos.map((video) => {
             const isAlbum = video.aweme_type === 68
             const isSelected = selectedIds.includes(video.aweme_id)
             return (
               <Card
                 key={video.aweme_id}
-                className={`overflow-hidden transition border ${
-                  isSelected ? 'ring-2 ring-primary border-primary' : 'hover:border-primary/40'
+                className={`surface-standard overflow-hidden transition flex flex-col justify-between py-0 gap-0 ${
+                  isSelected
+                    ? 'ring-2 ring-foreground border-foreground'
+                    : 'hover:border-foreground/20'
                 }`}
               >
-                <div
-                  className="relative aspect-video bg-slate-900 cursor-pointer group"
-                  onClick={() => onPreview(video)}
-                >
-                  {video.cover_url ? (
-                    <img
-                      src={video.cover_url}
-                      alt={video.description}
-                      className="h-full w-full object-cover transition group-hover:scale-[1.02]"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                      <Film className="size-10" />
-                    </div>
-                  )}
-
+                <div>
                   <div
-                    className="absolute top-2 left-2 z-10 flex items-center gap-1.5"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleSelect(video.aweme_id)}
-                      className="size-4 rounded accent-primary"
-                    />
-                    <Badge variant="secondary" className="bg-black/75 text-white text-[11px]">
-                      ID: {video.aweme_id.slice(-8)}
-                    </Badge>
-                  </div>
-
-                  <div
-                    className="absolute top-2 right-2 z-10 flex items-center gap-1"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Button
-                      size="icon"
-                      variant={video.is_bookmarked ? 'default' : 'secondary'}
-                      className="size-7 rounded-full"
-                      title={video.is_bookmarked ? 'Bỏ Bookmark' : 'Đánh dấu Bookmark'}
-                      onClick={() => void onToggleBookmark(video)}
-                    >
-                      <Star
-                        className={`size-3.5 ${
-                          video.is_bookmarked ? 'fill-amber-300 text-amber-300' : ''
-                        }`}
-                      />
-                    </Button>
-                  </div>
-
-                  {/* Badge Thời lượng phát của video (MM:SS) hoặc số ảnh Album */}
-                  <div className="absolute bottom-2 right-2 rounded-md bg-black/85 px-2 py-0.5 text-xs font-semibold text-white flex items-center gap-1 shadow">
-                    {isAlbum ? (
-                      <>
-                        <ImageIcon className="size-3.5 text-cyan-400" />
-                        <span>{video.image_count || 1} ảnh</span>
-                      </>
-                    ) : (
-                      <>
-                        <Clock className="size-3.5 text-cyan-400" />
-                        <span>{formatDurationMs(video.duration_ms)}</span>
-                      </>
-                    )}
-                  </div>
-
-                  {video.width && video.height && (
-                    <div className="absolute bottom-2 left-2 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-slate-200">
-                      {video.width}×{video.height}
-                    </div>
-                  )}
-                </div>
-
-                <CardContent className="p-3.5 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {video.author_avatar && (
-                        <img
-                          src={video.author_avatar}
-                          alt={video.author_nickname}
-                          className="size-5 rounded-full object-cover shrink-0"
-                        />
-                      )}
-                      <div className="truncate">
-                        <span className="font-semibold text-foreground">
-                          @{video.author_nickname}
-                        </span>
-                        <span className="ml-1 text-[10px] text-muted-foreground font-mono">
-                          ({video.author_sec_uid})
-                        </span>
-                      </div>
-                    </div>
-                    <Badge
-                      variant={
-                        video.download_status === 'COMPLETED'
-                          ? 'default'
-                          : video.download_status === 'FAILED'
-                            ? 'destructive'
-                            : 'outline'
-                      }
-                      className="text-[10px]"
-                    >
-                      {video.download_status}
-                    </Badge>
-                  </div>
-
-                  <p
-                    className="line-clamp-2 text-sm font-medium leading-snug cursor-pointer hover:text-primary"
+                    className="relative aspect-[16/10] bg-muted cursor-pointer group overflow-hidden"
                     onClick={() => onPreview(video)}
                   >
-                    {video.description || '(Không có mô tả)'}
-                  </p>
-
-                  {video.hashtags.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {video.hashtags.slice(0, 4).map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                        >
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Metadata Thời gian đăng, thời gian crawl, nhạc nền & nguồn */}
-                  <div className="rounded-lg bg-muted/40 p-2 text-[11px] text-muted-foreground space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="inline-flex items-center gap-1">
-                        <Calendar className="size-3 text-primary" /> Đăng:
-                      </span>
-                      <span className="font-medium text-foreground">
-                        {formatDateTime(video.create_time)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="inline-flex items-center gap-1">
-                        <Clock className="size-3 text-cyan-400" /> Thời lượng:
-                      </span>
-                      <span className="font-semibold text-foreground">
-                        {isAlbum
-                          ? `Album ${video.image_count || 1} ảnh`
-                          : formatDurationMs(video.duration_ms)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Crawl lúc:</span>
-                      <span>{formatDateTime(video.crawled_at)}</span>
-                    </div>
-                    {video.music_title && (
-                      <div className="flex items-center gap-1 truncate">
-                        <Music className="size-3 shrink-0 text-primary" />
-                        <span className="truncate">{video.music_title}</span>
+                    {video.cover_url ? (
+                      <img
+                        src={video.cover_url}
+                        alt={video.description || video.aweme_id}
+                        className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-muted-foreground/40">
+                        <Film className="size-6" />
                       </div>
                     )}
-                    <div className="flex items-center justify-between">
-                      <span>Nguồn:</span>
-                      <span className="truncate max-w-[160px] font-medium text-foreground">
-                        {video.source_names.join(', ') || 'Crawl ID lẻ'}
+
+                    {/* Top-left selection */}
+                    <div
+                      className="absolute top-2 left-2 z-10"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <label className="lg-clear inline-flex size-7 items-center justify-center rounded-md cursor-pointer">
+                        <input
+                          type="checkbox"
+                          aria-label={`Chọn bài ${video.aweme_id}`}
+                          checked={isSelected}
+                          onChange={() => toggleSelect(video.aweme_id)}
+                          className="size-3.5 rounded accent-foreground"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Top-right bookmark */}
+                    <div
+                      className="absolute top-2 right-2 z-10"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        aria-label={video.is_bookmarked ? 'Bỏ Bookmark' : 'Đánh dấu Bookmark'}
+                        onClick={() => void onToggleBookmark(video)}
+                        className="lg-clear inline-flex size-7 items-center justify-center rounded-md transition"
+                      >
+                        <Star
+                          className={`size-3.5 ${
+                            video.is_bookmarked ? 'fill-white text-white' : 'text-white/80'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* Bottom-left resolution */}
+                    {video.width && video.height && (
+                      <div className="lg-clear absolute bottom-2 left-2 rounded px-1.5 py-0.5 text-[10px] font-mono tabular-nums">
+                        {video.width}×{video.height}
+                      </div>
+                    )}
+
+                    {/* Bottom-right duration */}
+                    <div className="lg-clear absolute bottom-2 right-2 rounded px-1.5 py-0.5 text-[11px] font-mono tabular-nums">
+                      {isAlbum
+                        ? `${video.image_count || 1} ảnh`
+                        : formatDurationMs(video.duration_ms)}
+                    </div>
+                  </div>
+
+                  <CardContent className="p-3 space-y-1.5">
+                    <p
+                      className="line-clamp-2 text-xs font-medium leading-relaxed text-foreground cursor-pointer hover:underline min-h-[2.25rem]"
+                      onClick={() => onPreview(video)}
+                      title={video.description}
+                    >
+                      {video.description || '(Không có mô tả)'}
+                    </p>
+
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span className="truncate font-medium text-foreground/80">
+                        @{video.author_nickname}
+                      </span>
+                      <span className="font-mono tabular-nums">
+                        {formatNumber(video.digg_count)} tim
                       </span>
                     </div>
-                  </div>
 
-                  {video.bookmark_collection && (
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <Badge variant="secondary" className="text-[11px]">
-                        ★ {video.bookmark_collection}
-                      </Badge>
-                      {video.bookmark_note && (
-                        <span className="text-[11px] text-muted-foreground truncate">
-                          “{video.bookmark_note}”
-                        </span>
-                      )}
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono tabular-nums">
+                      <span>
+                        {analyzedOnly && video.edit_sent_at
+                          ? `Gửi: ${formatDateTime(video.edit_sent_at)}`
+                          : formatDateTime(video.create_time)}
+                      </span>
+                      <span>
+                        {video.edit_status === 'FAILED' ? (
+                          <span className="text-destructive">Lỗi gửi</span>
+                        ) : video.edit_item_id || video.edit_status === 'SENT' ? (
+                          'Đã phân tích'
+                        ) : video.download_status === 'COMPLETED' ? (
+                          'Đã tải'
+                        ) : (
+                          ''
+                        )}
+                      </span>
                     </div>
-                  )}
+                    {analyzedOnly && video.edit_error && (
+                      <p className="text-[11px] text-destructive line-clamp-2 font-mono">
+                        {video.edit_error}
+                      </p>
+                    )}
+                  </CardContent>
+                </div>
 
-                  <div className="grid grid-cols-4 gap-1 border-t pt-2 text-center text-xs">
-                    <span className="inline-flex items-center justify-center gap-1 text-rose-400">
-                      <Heart className="size-3.5" /> {formatNumber(video.digg_count)}
-                    </span>
-                    <span className="inline-flex items-center justify-center gap-1 text-sky-400">
-                      <MessageCircle className="size-3.5" /> {formatNumber(video.comment_count)}
-                    </span>
-                    <span className="inline-flex items-center justify-center gap-1 text-emerald-400">
-                      <Share2 className="size-3.5" /> {formatNumber(video.share_count)}
-                    </span>
-                    <span className="inline-flex items-center justify-center gap-1 text-amber-400">
-                      <Bookmark className="size-3.5" /> {formatNumber(video.collect_count)}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 pt-1">
+                <div className="px-3 pb-3 pt-1 flex items-center gap-1.5">
+                  <Button
+                    size="xs"
+                    variant="secondary"
+                    className="flex-1"
+                    onClick={() => onPreview(video)}
+                  >
+                    Xem
+                  </Button>
+                  {!analyzedOnly && (
                     <Button
-                      size="sm"
-                      variant="secondary"
-                      className="h-8 text-xs flex-1"
-                      onClick={() => onPreview(video)}
-                    >
-                      <Eye className="size-3.5 mr-1" /> Xem & Meta
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={video.download_status === 'COMPLETED' ? 'outline' : 'default'}
-                      className="h-8 text-xs flex-1"
+                      size="xs"
+                      variant="outline"
+                      className="flex-1"
                       onClick={() => void onDownloadSingle(video.aweme_id)}
                     >
-                      <Download className="size-3.5 mr-1" />
-                      {video.download_status === 'COMPLETED' ? 'Đã lưu' : 'Lưu Video'}
+                      {video.download_status === 'COMPLETED' ? 'Đã lưu' : 'Lưu'}
                     </Button>
-                    <Button size="icon" variant="ghost" className="size-8" asChild>
-                      <a href={video.original_url} target="_blank" rel="noreferrer" title="Mở link gốc">
-                        <ExternalLink className="size-3.5" />
-                      </a>
+                  )}
+                  {!isAlbum && onSendToEdit && (
+                    video.edit_item_id ? (
+                      <>
+                        <Button size="xs" variant="outline" className={analyzedOnly ? 'flex-1' : ''} asChild>
+                          <a
+                            href={
+                              video.edit_studio_url ||
+                              `${editStudioBaseUrl.replace(/\/$/, '')}/items/${video.edit_item_id}`
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Studio ↗
+                          </a>
+                        </Button>
+                        {analyzedOnly && (
+                          <Button
+                            size="icon-xs"
+                            variant="outline"
+                            disabled={sendingEditIds.includes(video.aweme_id)}
+                            title="Gửi phân tích lại"
+                            aria-label={`Gửi phân tích lại ${video.aweme_id}`}
+                            onClick={() => void onSendToEdit([video.aweme_id])}
+                          >
+                            <RotateCcw className="size-3.5" />
+                          </Button>
+                        )}
+                      </>
+                    ) : (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className={analyzedOnly ? 'flex-1' : ''}
+                        disabled={sendingEditIds.includes(video.aweme_id)}
+                        onClick={() => void onSendToEdit([video.aweme_id])}
+                      >
+                        {sendingEditIds.includes(video.aweme_id)
+                          ? '...'
+                          : analyzedOnly
+                            ? 'Gửi lại'
+                            : 'Dịch'}
+                      </Button>
+                    )
+                  )}
+                  {analyzedOnly && onClearEditStatus && (
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      title="Bỏ khỏi danh sách đã gửi"
+                      aria-label={`Bỏ bài ${video.aweme_id} khỏi danh sách đã gửi`}
+                      onClick={() => void onClearEditStatus(video.aweme_id)}
+                    >
+                      <Trash2 className="size-3.5" />
                     </Button>
-                  </div>
-                </CardContent>
+                  )}
+                  <Button size="icon-xs" variant="ghost" asChild>
+                    <a
+                      href={video.original_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Mở trên Douyin"
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  </Button>
+                </div>
               </Card>
             )
           })}
         </div>
       ) : (
-        <Card>
+        <Card className="surface-standard py-0">
           <CardContent className="p-0">
             <Table>
               <TableHeader>
@@ -571,15 +632,16 @@ export function VideoListSection({
                   <TableHead className="w-10">
                     <input
                       type="checkbox"
+                      aria-label="Chọn tất cả video trên trang"
                       checked={videos.length > 0 && selectedIds.length === videos.length}
                       onChange={toggleSelectAll}
                     />
                   </TableHead>
-                  <TableHead>Bài đăng & Metadata</TableHead>
-                  <TableHead>Tác giả & Nguồn</TableHead>
-                  <TableHead>Thời lượng & Kích thước</TableHead>
-                  <TableHead>Thời gian (Đăng / Crawl)</TableHead>
-                  <TableHead>Tương tác (❤/💬/↗/🔖)</TableHead>
+                  <TableHead>Bài đăng</TableHead>
+                  <TableHead>Tác giả</TableHead>
+                  <TableHead>Thời lượng</TableHead>
+                  <TableHead>{analyzedOnly ? 'Thời điểm gửi' : 'Ngày đăng'}</TableHead>
+                  <TableHead>Lượt tim</TableHead>
                   <TableHead>Trạng thái</TableHead>
                   <TableHead className="text-right">Thao tác</TableHead>
                 </TableRow>
@@ -590,107 +652,94 @@ export function VideoListSection({
                     <TableCell>
                       <input
                         type="checkbox"
+                        aria-label={`Chọn bài ${video.aweme_id}`}
                         checked={selectedIds.includes(video.aweme_id)}
                         onChange={() => toggleSelect(video.aweme_id)}
                       />
                     </TableCell>
                     <TableCell className="max-w-xs">
-                      <div className="flex items-start gap-2.5">
-                        {video.cover_url && (
-                          <img
-                            src={video.cover_url}
-                            alt=""
-                            className="h-12 w-20 rounded object-cover shrink-0 cursor-pointer"
-                            onClick={() => onPreview(video)}
-                          />
-                        )}
-                        <div className="space-y-1 min-w-0">
-                          <p
-                            className="text-xs font-medium line-clamp-2 cursor-pointer hover:text-primary"
-                            onClick={() => onPreview(video)}
-                          >
-                            {video.description || '(Không có mô tả)'}
-                          </p>
-                          <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-                            <code>ID: {video.aweme_id}</code>
-                            {video.music_title && <span>· 🎵 {video.music_title}</span>}
-                          </div>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      <div className="font-semibold">@{video.author_nickname}</div>
-                      <div className="text-[10px] font-mono text-muted-foreground">
-                        {video.author_sec_uid}
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        {video.source_names.join(', ') || 'Crawl lẻ'}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      <Badge variant="secondary" className="font-mono">
-                        {video.aweme_type === 68
-                          ? `${video.image_count || 1} ảnh`
-                          : formatDurationMs(video.duration_ms)}
-                      </Badge>
-                      {video.width && video.height && (
-                        <div className="text-[11px] text-muted-foreground mt-1">
-                          {video.width}×{video.height}
-                        </div>
+                      <p
+                        className="text-xs font-medium line-clamp-1 cursor-pointer hover:underline"
+                        onClick={() => onPreview(video)}
+                      >
+                        {video.description || video.aweme_id}
+                      </p>
+                      {analyzedOnly && video.edit_error && (
+                        <p className="text-[11px] text-destructive line-clamp-1 font-mono mt-0.5">
+                          {video.edit_error}
+                        </p>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs">
-                      <div>Đăng: {formatDateTime(video.create_time)}</div>
-                      <div className="text-[11px] text-muted-foreground">
-                        Crawl: {formatDateTime(video.crawled_at)}
-                      </div>
+                    <TableCell className="text-xs text-muted-foreground">
+                      @{video.author_nickname}
                     </TableCell>
-                    <TableCell className="text-xs">
-                      <div>
-                        ❤ {formatNumber(video.digg_count)} · 💬 {formatNumber(video.comment_count)}
-                      </div>
-                      <div className="text-muted-foreground">
-                        ↗ {formatNumber(video.share_count)} · 🔖 {formatNumber(video.collect_count)}
-                      </div>
+                    <TableCell className="text-xs font-mono tabular-nums">
+                      {video.aweme_type === 68
+                        ? `${video.image_count || 1} ảnh`
+                        : formatDurationMs(video.duration_ms)}
+                    </TableCell>
+                    <TableCell className="text-xs font-mono tabular-nums text-muted-foreground">
+                      {analyzedOnly && video.edit_sent_at
+                        ? formatDateTime(video.edit_sent_at)
+                        : formatDateTime(video.create_time)}
+                    </TableCell>
+                    <TableCell className="text-xs font-mono tabular-nums">
+                      {formatNumber(video.digg_count)}
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        variant={
-                          video.download_status === 'COMPLETED'
-                            ? 'default'
-                            : video.download_status === 'FAILED'
-                              ? 'destructive'
-                              : 'outline'
-                        }
-                      >
-                        {video.download_status}
+                      <Badge variant="outline" className="text-[11px] font-normal">
+                        {analyzedOnly
+                          ? video.edit_status === 'FAILED'
+                            ? 'FAILED'
+                            : 'SENT'
+                          : video.download_status}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right space-x-1">
-                      <Button
-                        size="icon"
-                        variant={video.is_bookmarked ? 'default' : 'ghost'}
-                        className="size-7"
-                        onClick={() => void onToggleBookmark(video)}
-                      >
-                        <Star className="size-3.5" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="h-7 text-xs"
-                        onClick={() => onPreview(video)}
-                      >
+                      <Button size="xs" variant="ghost" onClick={() => onPreview(video)}>
                         Xem
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs"
-                        onClick={() => void onDownloadSingle(video.aweme_id)}
-                      >
-                        Tải
-                      </Button>
+                      {video.edit_item_id && (
+                        <Button size="xs" variant="outline" asChild>
+                          <a
+                            href={
+                              video.edit_studio_url ||
+                              `${editStudioBaseUrl.replace(/\/$/, '')}/items/${video.edit_item_id}`
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Studio ↗
+                          </a>
+                        </Button>
+                      )}
+                      {analyzedOnly && onSendToEdit && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={sendingEditIds.includes(video.aweme_id)}
+                          onClick={() => void onSendToEdit([video.aweme_id])}
+                        >
+                          Gửi lại
+                        </Button>
+                      )}
+                      {analyzedOnly && onClearEditStatus ? (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => void onClearEditStatus(video.aweme_id)}
+                        >
+                          Bỏ
+                        </Button>
+                      ) : (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onClick={() => void onDownloadSingle(video.aweme_id)}
+                        >
+                          Tải
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -701,8 +750,8 @@ export function VideoListSection({
       )}
 
       <div className="flex items-center justify-between pt-2">
-        <span className="text-xs text-muted-foreground">
-          Trang {filters.page} / {totalPages} (Tổng {total} bài)
+        <span className="text-xs text-muted-foreground font-mono tabular-nums">
+          Trang {filters.page} / {totalPages} ({total} mục)
         </span>
         <div className="flex items-center gap-2">
           <Button
@@ -711,7 +760,7 @@ export function VideoListSection({
             disabled={filters.page <= 1}
             onClick={() => onFiltersChange({ ...filters, page: filters.page - 1 })}
           >
-            Trang trước
+            Trước
           </Button>
           <Button
             size="sm"
@@ -719,7 +768,7 @@ export function VideoListSection({
             disabled={filters.page >= totalPages}
             onClick={() => onFiltersChange({ ...filters, page: filters.page + 1 })}
           >
-            Trang sau
+            Sau
           </Button>
         </div>
       </div>

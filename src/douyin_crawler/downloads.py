@@ -54,6 +54,40 @@ class DownloadRunner:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def ensure_downloaded(self, aweme_id: str) -> Path:
+        async with self._sessions() as session:
+            video = await session.get(DouyinVideo, aweme_id)
+            if video is None:
+                raise HTTPException(status_code=404, detail="Không tìm thấy video")
+            if video.aweme_type == AwemeType.IMAGE_ALBUM:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Bài đăng {aweme_id} là Album ảnh, không phải video MP4",
+                )
+            if (
+                video.download_status == "COMPLETED"
+                and video.video_local_path
+                and Path(video.video_local_path).is_file()
+            ):
+                return Path(video.video_local_path).resolve()
+            video.download_status = "DOWNLOADING"
+            video.download_error = None
+            await session.commit()
+
+        await self._download(aweme_id, trigger_type="MANUAL", record_log=False)
+
+        async with self._sessions() as session:
+            video = await session.get(DouyinVideo, aweme_id)
+            if (
+                video is None
+                or video.download_status != "COMPLETED"
+                or not video.video_local_path
+                or not Path(video.video_local_path).is_file()
+            ):
+                err = (video.download_error if video else None) or "Không thể tải file MP4"
+                raise HTTPException(status_code=502, detail=err)
+            return Path(video.video_local_path).resolve()
+
     async def wait(self) -> None:
         if self._tasks:
             await asyncio.gather(*self._tasks)
@@ -115,8 +149,9 @@ class DownloadRunner:
                         )
                     )
             except Exception as error:
+                err_msg = str(error).strip() or repr(error)
                 video.download_status = "FAILED"
-                video.download_error = str(error)
+                video.download_error = err_msg
                 session.add(
                     CrawlLog(
                         target_id=video.target_id,
@@ -127,7 +162,7 @@ class DownloadRunner:
                         started_at=started_at,
                         finished_at=datetime.now(UTC),
                         status="FAILED",
-                        error_message=str(error),
+                        error_message=err_msg,
                     )
                 )
             await session.commit()
@@ -147,8 +182,14 @@ class DownloadRunner:
     def _expired(url: str | None) -> bool:
         if not url:
             return True
+        now_ts = int(datetime.now(UTC).timestamp())
         values = parse_qs(urlparse(url).query).get("x-expires")
-        return bool(values and int(values[0]) <= int(datetime.now(UTC).timestamp()))
+        if values and int(values[0]) <= now_ts:
+            return True
+        path_match = re.search(r"/[0-9a-f]{32}/([0-9a-f]{8})/", urlparse(url).path)
+        if path_match and int(path_match.group(1), 16) <= now_ts:
+            return True
+        return False
 
 
 def create_downloads_router(runner: DownloadRunner) -> APIRouter:

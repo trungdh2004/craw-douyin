@@ -75,6 +75,26 @@ export interface VideoItem {
   bookmarked_at: string | null
   bookmark_collection: string | null
   bookmark_note: string | null
+  edit_item_id?: string | null
+  edit_list_id?: string | null
+  edit_sent_at?: string | null
+  edit_status?: 'SENT' | 'FAILED' | string | null
+  edit_error?: string | null
+  edit_studio_url?: string | null
+}
+
+export interface EditStudioConfig {
+  host: string
+  port: number
+  base_url: string
+  updated_at?: string
+}
+
+export interface SendToEditResponse {
+  list_id: string
+  item_ids: string[]
+  studio_url: string
+  edit_base_url: string
 }
 
 export interface VideoPage {
@@ -87,6 +107,38 @@ export interface VideoPage {
 export interface BookmarkCollection {
   name: string
   count: number
+}
+
+export interface TrendingHashtagItem {
+  tag: string
+  video_count: number
+  total_digg: number
+}
+
+export interface TrendingMusicItem {
+  title: string
+  author: string | null
+  video_count: number
+  total_digg: number
+}
+
+export interface SuggestedTopicItem {
+  keyword: string
+  label: string
+  category: string
+}
+
+export interface TrendsResponse {
+  trending_hashtags: TrendingHashtagItem[]
+  trending_music: TrendingMusicItem[]
+  suggested_topics: SuggestedTopicItem[]
+}
+
+export interface CrawlLogEventItem {
+  ts: string
+  level: 'INFO' | 'SUCCESS' | 'WARN' | 'ERROR' | string
+  step: string
+  message: string
 }
 
 export interface CrawlLogItem {
@@ -102,6 +154,10 @@ export interface CrawlLogItem {
   status: 'SCHEDULED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CAPTCHA_BLOCKED'
   new_videos_count: number
   updated_videos_count: number
+  scanned_count?: number
+  target_limit?: number
+  current_phase?: string | null
+  events?: CrawlLogEventItem[]
   error_message: string | null
 }
 
@@ -122,9 +178,12 @@ export interface AntiBotSettings {
   stealth_mode: boolean
   human_scroll: boolean
   auto_stop_on_captcha: boolean
+  headless_mode?: boolean
   max_pages_per_run: number
   user_agent: string | null
   proxy_url: string | null
+  edit_studio_host?: string
+  edit_studio_port?: number
   updated_at: string
 }
 
@@ -193,17 +252,71 @@ export function describeSchedule(target: CrawlTargetItem): string {
   }
 }
 
+export interface AuthStatusResponse {
+  authenticated?: boolean
+  username?: string | null
+}
+
+export interface LoginResponse {
+  authenticated: boolean
+  username: string
+  token: string
+}
+
+const SESSION_TOKEN_KEY = 'douyin_session_token'
+
+export function getSessionToken(): string | null {
+  try {
+    return window.sessionStorage.getItem(SESSION_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function setSessionToken(token: string): void {
+  try {
+    window.sessionStorage.setItem(SESSION_TOKEN_KEY, token)
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function clearSessionToken(): void {
+  try {
+    window.sessionStorage.removeItem(SESSION_TOKEN_KEY)
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const token = getSessionToken()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...((init?.headers as Record<string, string>) || {}),
+  }
   const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
+    credentials: 'same-origin',
     ...init,
+    headers,
   })
   if (!response.ok) {
+    if (response.status === 401 && !url.includes('/api/auth/login')) {
+      clearSessionToken()
+      window.dispatchEvent(new CustomEvent('douyin:unauthorized'))
+    }
     const text = await response.text()
-    throw new Error(text || `HTTP ${response.status}`)
+    let message = text || `HTTP ${response.status}`
+    try {
+      const parsed = JSON.parse(text) as { detail?: string }
+      if (parsed?.detail) {
+        message = parsed.detail
+      }
+    } catch {
+      // keep raw text
+    }
+    throw new Error(message)
   }
   if (response.status === 204) {
     return undefined as T

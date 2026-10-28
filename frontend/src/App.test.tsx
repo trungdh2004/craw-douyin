@@ -1,10 +1,13 @@
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import { formatDurationMs } from './lib/api'
 
 describe('Douyin Crawler Left Sidebar Dashboard', () => {
+  afterEach(() => {
+    cleanup()
+  })
   beforeEach(() => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input.toString()
@@ -53,6 +56,15 @@ describe('Douyin Crawler Left Sidebar Dashboard', () => {
       }
       if (url.includes('/api/bookmarks/collections')) {
         return new Response(JSON.stringify([{ name: 'Idea kịch bản', count: 2 }]))
+      }
+      if (url.includes('/api/trends')) {
+        return new Response(
+          JSON.stringify({
+            trending_hashtags: [{ tag: 'ootd', video_count: 5, total_digg: 12000 }],
+            trending_music: [{ title: 'Nhạc nền hot', author: 'DJ A', video_count: 3, total_digg: 8000 }],
+            suggested_topics: [{ keyword: '穿搭', label: 'Phối đồ OOTD (穿搭)', category: 'Thời trang' }],
+          }),
+        )
       }
       if (url.includes('/api/videos')) {
         return new Response(
@@ -177,6 +189,18 @@ describe('Douyin Crawler Left Sidebar Dashboard', () => {
       screen.getByRole('button', { name: /Đồng bộ mục Đã lưu từ Douyin/i }),
     ).toBeInTheDocument()
 
+    // Navigate to Analyzed Videos
+    await user.click(screen.getByRole('button', { name: /Đã gửi Phân tích/i }))
+    expect(
+      await screen.findByText('Video Đã Đẩy Sang Phân Tích'),
+    ).toBeInTheDocument()
+
+    // Navigate to Studio Settings (IP & Port)
+    await user.click(screen.getByRole('button', { name: /Server Phân tích/i }))
+    expect(
+      await screen.findByText('Cấu hình Server Phân tích (IP & Port)'),
+    ).toBeInTheDocument()
+
     // Navigate to Single Crawl
     await user.click(screen.getByRole('button', { name: /Crawl 1 ID \/ Link/i }))
     expect(
@@ -202,5 +226,104 @@ describe('Douyin Crawler Left Sidebar Dashboard', () => {
     expect(
       await screen.findByText('Thiết lập Chống Bot (Anti-Bot & Stealth)'),
     ).toBeInTheDocument()
+  })
+
+  it('requires admin login when unauthenticated, allows password change, and logs out', async () => {
+    let loggedIn = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      const method = init?.method || 'GET'
+      if (url.includes('/api/auth/status')) {
+        return new Response(
+          JSON.stringify({
+            authenticated: loggedIn,
+            username: loggedIn ? 'admin' : null,
+          }),
+        )
+      }
+      if (url.includes('/api/auth/login') && method === 'POST') {
+        loggedIn = true
+        return new Response(
+          JSON.stringify({
+            authenticated: true,
+            username: 'admin',
+            token: 'test-session-token-123',
+          }),
+        )
+      }
+      if (url.includes('/api/auth/password') && method === 'PUT') {
+        return new Response(
+          JSON.stringify({
+            authenticated: true,
+            username: 'trungadmin',
+            token: 'test-session-token-456',
+          }),
+        )
+      }
+      if (url.includes('/api/auth/logout') && method === 'POST') {
+        loggedIn = false
+        return new Response(
+          JSON.stringify({
+            authenticated: false,
+            username: null,
+          }),
+        )
+      }
+      if (url.includes('/api/browser/status')) {
+        return new Response(JSON.stringify({ status: 'AUTHENTICATED' }))
+      }
+      if (url.includes('/api/scheduler/status')) {
+        return new Response(JSON.stringify({ running: true, paused: false, jobs_count: 0 }))
+      }
+      if (url.includes('/api/stats')) {
+        return new Response(
+          JSON.stringify({
+            total_videos: 0,
+            downloaded_videos: 0,
+            bookmarked_videos: 0,
+            active_targets: 0,
+            total_targets: 0,
+            running_jobs: 0,
+            completed_jobs: 0,
+            failed_jobs: 0,
+          }),
+        )
+      }
+      if (url.includes('/api/targets')) {
+        return new Response(JSON.stringify([]))
+      }
+      if (url.includes('/api/videos')) {
+        return new Response(JSON.stringify({ items: [], total: 0, page: 1, page_size: 24 }))
+      }
+      if (url.includes('/api/logs')) {
+        return new Response(JSON.stringify({ items: [], total: 0, page: 1, page_size: 50 }))
+      }
+      return new Response(JSON.stringify({}))
+    })
+
+    const user = userEvent.setup()
+    render(<App />)
+
+    // 1. Shows Login screen initially
+    expect(await screen.findByText('Đăng nhập Quản trị')).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText(/Tên đăng nhập/i), 'admin')
+    await user.type(screen.getByLabelText(/Mật khẩu/i), 'admin123')
+    await user.click(screen.getByRole('button', { name: /Đăng nhập hệ thống/i }))
+
+    // 2. Enters Dashboard after login
+    expect(
+      await screen.findByText('Tổng quan Hệ thống Douyin Crawler'),
+    ).toBeInTheDocument()
+
+    // 3. Navigate to Server Phân tích / Settings to see Admin Password card
+    await user.click(screen.getByRole('button', { name: /Server Phân tích/i }))
+    expect(
+      await screen.findByText('Tài khoản Quản trị (Đổi mật khẩu)'),
+    ).toBeInTheDocument()
+
+    // 4. Click Logout in Sidebar footer
+    await user.click(screen.getByRole('button', { name: /Đăng xuất/i }))
+    expect(await screen.findByText('Đăng nhập Quản trị')).toBeInTheDocument()
   })
 })

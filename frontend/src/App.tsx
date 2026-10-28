@@ -1,25 +1,26 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Activity,
   AlertTriangle,
   Bookmark,
   CalendarClock,
   CheckCircle2,
   Clock,
-  Edit3,
+  ExternalLink,
   Film,
   History,
+  KeyRound,
   LayoutDashboard,
   Link2,
-  PauseCircle,
-  Play,
-  PlayCircle,
+  Lock,
+  LogOut,
   Plus,
   RefreshCw,
   RotateCcw,
+  Send,
+  Server,
   ShieldCheck,
+  Terminal,
   Trash2,
-  Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -50,6 +51,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { BrandLogo } from '@/components/BrandLogo'
+import { LiveTerminalDrawer } from '@/components/LiveTerminalDrawer'
 import {
   type VideoFilterState,
   VideoListSection,
@@ -57,32 +60,43 @@ import {
 import { VideoPreviewDialog } from '@/components/VideoPreviewDialog'
 import {
   type AntiBotSettings,
+  type AuthStatusResponse,
   type BookmarkCollection,
   type BrowserStatus,
   type CrawlLogPage,
   type CrawlTargetItem,
+  type EditStudioConfig,
+  type LoginResponse,
   type OverviewStats,
   type PresetName,
   type ScheduleType,
   type SchedulerStatus,
+  type SendToEditResponse,
+  type SuggestedTopicItem,
   type TargetType,
+  type TrendsResponse,
   type VideoItem,
   type VideoPage,
   apiFetch,
+  clearSessionToken,
   describeSchedule,
   formatDateTime,
   formatDurationMs,
   formatExecutionDuration,
   formatNumber,
+  getSessionToken,
+  setSessionToken,
 } from '@/lib/api'
 
 type NavSection =
   | 'overview'
   | 'library'
   | 'bookmarks'
+  | 'analyzed'
   | 'single-crawl'
   | 'targets'
   | 'history'
+  | 'studio-settings'
   | 'anti-bot'
 
 interface TargetFormState {
@@ -127,18 +141,38 @@ const DEFAULT_VIDEO_FILTERS: VideoFilterState = {
   aweme_type: '',
   download_status: '',
   is_bookmarked: '',
+  is_analyzed: '',
+  edit_status: '',
   date_from: '',
   date_to: '',
   min_digg: '',
   min_duration_sec: '',
   max_duration_sec: '',
   bookmark_collection: '',
-  sort: 'create_time',
+  sort: 'crawled_at',
   order: 'desc',
   page: 1,
 }
 
+const DEFAULT_ANALYZED_FILTERS: VideoFilterState = {
+  ...DEFAULT_VIDEO_FILTERS,
+  sort: 'edit_sent_at',
+}
+
 export function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true)
+  const [adminUsername, setAdminUsername] = useState<string>('admin')
+  const [loginUsername, setLoginUsername] = useState<string>('admin')
+  const [loginPassword, setLoginPassword] = useState<string>('')
+  const [loginError, setLoginError] = useState<string | null>(null)
+  const [loginLoading, setLoginLoading] = useState<boolean>(false)
+
+  const [pwCurrent, setPwCurrent] = useState<string>('')
+  const [pwNewUsername, setPwNewUsername] = useState<string>('admin')
+  const [pwNewPassword, setPwNewPassword] = useState<string>('')
+  const [pwNotice, setPwNotice] = useState<string | null>(null)
+  const [pwError, setPwError] = useState<string | null>(null)
+
   const [activeSection, setActiveSection] = useState<NavSection>('overview')
   const [browserStatus, setBrowserStatus] = useState<BrowserStatus>('LOGIN_REQUIRED')
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus>({
@@ -169,9 +203,17 @@ export function App() {
     page: 1,
     page_size: 24,
   })
+  const [analyzedPage, setAnalyzedPage] = useState<VideoPage>({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 24,
+  })
   const [collections, setCollections] = useState<BookmarkCollection[]>([])
+  const [trends, setTrends] = useState<TrendsResponse | null>(null)
   const [libraryFilters, setLibraryFilters] = useState<VideoFilterState>(DEFAULT_VIDEO_FILTERS)
   const [bookmarkFilters, setBookmarkFilters] = useState<VideoFilterState>(DEFAULT_VIDEO_FILTERS)
+  const [analyzedFilters, setAnalyzedFilters] = useState<VideoFilterState>(DEFAULT_ANALYZED_FILTERS)
   const [previewVideo, setPreviewVideo] = useState<VideoItem | null>(null)
 
   // Single Crawl state
@@ -197,12 +239,43 @@ export function App() {
   const [logJobTypeFilter, setLogJobTypeFilter] = useState('')
   const [logStatusFilter, setLogStatusFilter] = useState('')
   const [logTargetFilter, setLogTargetFilter] = useState('')
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [terminalMinimized, setTerminalMinimized] = useState(false)
+  const [selectedTerminalLogId, setSelectedTerminalLogId] = useState<number | null>(null)
 
-  // Anti-bot state
+  const openLogTerminal = (logId?: number | null) => {
+    if (logId !== undefined && logId !== null) {
+      setSelectedTerminalLogId(logId)
+    }
+    setTerminalOpen(true)
+    setTerminalMinimized(false)
+  }
+
+  // Anti-bot & Studio Settings state
   const [antiBot, setAntiBot] = useState<AntiBotSettings | null>(null)
   const [antiBotSavedNotice, setAntiBotSavedNotice] = useState(false)
+  const [studioHost, setStudioHost] = useState('127.0.0.1')
+  const [studioPort, setStudioPort] = useState(8000)
+  const [studioSavedNotice, setStudioSavedNotice] = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string
+    description: string
+    confirmLabel?: string
+    onConfirm: () => Promise<void>
+  } | null>(null)
+  const [sendingEditIds, setSendingEditIds] = useState<string[]>([])
+  const [editStudioBanner, setEditStudioBanner] = useState<{
+    status: 'sending' | 'success' | 'error'
+    message: string
+    studioUrl?: string
+  } | null>(null)
 
-  const buildVideoQuery = (filters: VideoFilterState, forceBookmark?: boolean): string => {
+  const editStudioBaseUrl = `http://${studioHost.trim() || '127.0.0.1'}:${studioPort || 8000}`
+
+  const buildVideoQuery = (
+    filters: VideoFilterState,
+    options?: { forceBookmark?: boolean; forceAnalyzed?: boolean },
+  ): string => {
     const params = new URLSearchParams()
     if (filters.search) params.set('search', filters.search)
     if (filters.target_id) params.set('target_id', filters.target_id)
@@ -215,10 +288,18 @@ export function App() {
     if (filters.max_duration_sec) {
       params.set('max_duration_ms', String(Number(filters.max_duration_sec) * 1000))
     }
-    if (forceBookmark) {
+    if (options?.forceBookmark) {
       params.set('is_bookmarked', 'true')
     } else if (filters.is_bookmarked !== '') {
       params.set('is_bookmarked', filters.is_bookmarked)
+    }
+    if (options?.forceAnalyzed) {
+      params.set('is_analyzed', 'true')
+    } else if (filters.is_analyzed) {
+      params.set('is_analyzed', filters.is_analyzed)
+    }
+    if (filters.edit_status) {
+      params.set('edit_status', filters.edit_status)
     }
     if (filters.date_from) {
       params.set('date_from', new Date(filters.date_from).toISOString())
@@ -238,16 +319,20 @@ export function App() {
 
   const refreshCoreStatus = useCallback(async () => {
     try {
-      const [browserRes, schedRes, statsRes, targetsRes] = await Promise.all([
+      const [browserRes, schedRes, statsRes, targetsRes, trendsRes] = await Promise.all([
         apiFetch<{ status: BrowserStatus }>('/api/browser/status'),
         apiFetch<SchedulerStatus>('/api/scheduler/status'),
         apiFetch<OverviewStats>('/api/stats'),
         apiFetch<CrawlTargetItem[]>('/api/targets'),
+        apiFetch<TrendsResponse>('/api/trends').catch(() => null),
       ])
       setBrowserStatus(browserRes.status)
       setSchedulerStatus(schedRes)
       setStats(statsRes)
       setTargets(targetsRes)
+      if (trendsRes) {
+        setTrends(trendsRes)
+      }
     } catch {
       // ignore transient network errors
     }
@@ -265,7 +350,7 @@ export function App() {
 
   const loadBookmarks = useCallback(async () => {
     try {
-      const q = buildVideoQuery(bookmarkFilters, true)
+      const q = buildVideoQuery(bookmarkFilters, { forceBookmark: true })
       const [data, cols] = await Promise.all([
         apiFetch<VideoPage>(`/api/videos?${q}`),
         apiFetch<BookmarkCollection[]>('/api/bookmarks/collections'),
@@ -276,6 +361,16 @@ export function App() {
       // ignore
     }
   }, [bookmarkFilters])
+
+  const loadAnalyzed = useCallback(async () => {
+    try {
+      const q = buildVideoQuery(analyzedFilters, { forceAnalyzed: true })
+      const data = await apiFetch<VideoPage>(`/api/videos?${q}`)
+      setAnalyzedPage(data)
+    } catch {
+      // ignore
+    }
+  }, [analyzedFilters])
 
   const loadLogs = useCallback(async () => {
     try {
@@ -294,38 +389,156 @@ export function App() {
     try {
       const data = await apiFetch<AntiBotSettings>('/api/settings/anti-bot')
       setAntiBot(data)
+      if (data.edit_studio_host) setStudioHost(data.edit_studio_host)
+      if (data.edit_studio_port) setStudioPort(data.edit_studio_port)
     } catch {
       // ignore
     }
   }, [])
 
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch<AuthStatusResponse>('/api/auth/status')
+      if (res.authenticated === false) {
+        clearSessionToken()
+        setIsAuthenticated(false)
+        return
+      }
+      if (res.authenticated === true) {
+        // Strict session-only guard: if tab was closed and reopened without sessionStorage token, require login
+        if (!getSessionToken()) {
+          await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => null)
+          setIsAuthenticated(false)
+          return
+        }
+        setIsAuthenticated(true)
+        if (res.username) {
+          setAdminUsername(res.username)
+          setPwNewUsername(res.username)
+        }
+      }
+    } catch {
+      setIsAuthenticated(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void checkAuthStatus()
+    const onUnauthorized = () => {
+      setIsAuthenticated(false)
+    }
+    window.addEventListener('douyin:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('douyin:unauthorized', onUnauthorized)
+  }, [checkAuthStatus])
+
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoginError(null)
+    setLoginLoading(true)
+    try {
+      const res = await apiFetch<LoginResponse>('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: loginUsername.trim(),
+          password: loginPassword,
+        }),
+      })
+      setSessionToken(res.token)
+      setAdminUsername(res.username)
+      setPwNewUsername(res.username)
+      setLoginPassword('')
+      setIsAuthenticated(true)
+      await Promise.all([
+        refreshCoreStatus(),
+        loadLibrary(),
+        loadBookmarks(),
+        loadAnalyzed(),
+        loadLogs(),
+        loadAntiBot(),
+      ])
+    } catch (err) {
+      setLoginError(
+        err instanceof Error ? err.message : 'Sai tên đăng nhập hoặc mật khẩu',
+      )
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+  const handleAdminLogout = async () => {
+    clearSessionToken()
+    await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => null)
+    setIsAuthenticated(false)
+    setLoginPassword('')
+  }
+
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPwError(null)
+    setPwNotice(null)
+    try {
+      const res = await apiFetch<LoginResponse>('/api/auth/password', {
+        method: 'PUT',
+        body: JSON.stringify({
+          current_password: pwCurrent,
+          new_username: pwNewUsername.trim() || adminUsername,
+          new_password: pwNewPassword,
+        }),
+      })
+      setSessionToken(res.token)
+      setAdminUsername(res.username)
+      setPwNewUsername(res.username)
+      setPwCurrent('')
+      setPwNewPassword('')
+      setPwNotice(`Đã cập nhật thông tin đăng nhập (${res.username})`)
+      window.setTimeout(() => setPwNotice(null), 3000)
+    } catch (err) {
+      setPwError(
+        err instanceof Error ? err.message : 'Không thể đổi mật khẩu',
+      )
+    }
+  }
+
   useEffect(() => {
     void refreshCoreStatus()
     void loadLibrary()
     void loadBookmarks()
+    void loadAnalyzed()
     void loadLogs()
     void loadAntiBot()
-  }, [refreshCoreStatus, loadLibrary, loadBookmarks, loadLogs, loadAntiBot])
+  }, [refreshCoreStatus, loadLibrary, loadBookmarks, loadAnalyzed, loadLogs, loadAntiBot])
 
-  // Auto-poll status while jobs or login are running
   useEffect(() => {
+    void loadLibrary()
+    void loadBookmarks()
+    void loadAnalyzed()
+  }, [stats.total_videos, stats.running_jobs, loadLibrary, loadBookmarks, loadAnalyzed])
+
+  useEffect(() => {
+    const isBusy =
+      stats.running_jobs > 0 ||
+      logsPage.items.some((l) => l.status === 'RUNNING')
+    const intervalMs = isBusy ? 1500 : 3000
     const timer = window.setInterval(() => {
       void refreshCoreStatus()
       if (
-        stats.running_jobs > 0 ||
+        isBusy ||
+        terminalOpen ||
         activeSection === 'history' ||
         activeSection === 'overview'
       ) {
         void loadLogs()
       }
-      if (stats.running_jobs > 0) {
+      if (isBusy) {
         void loadLibrary()
         void loadBookmarks()
       }
-    }, 3000)
+    }, intervalMs)
     return () => window.clearInterval(timer)
   }, [
     stats.running_jobs,
+    logsPage.items,
+    terminalOpen,
     activeSection,
     refreshCoreStatus,
     loadLogs,
@@ -366,6 +579,84 @@ export function App() {
       void loadBookmarks()
       void refreshCoreStatus()
     }, 800)
+  }
+
+  const handleSendToEdit = async (awemeIds: string[]) => {
+    if (awemeIds.length === 0) return
+    setSendingEditIds((prev) => Array.from(new Set([...prev, ...awemeIds])))
+    setEditStudioBanner({
+      status: 'sending',
+      message: `Đang tải file MP4 không logo & đẩy ${awemeIds.length} video sang Edit Studio...`,
+    })
+    try {
+      const res = await apiFetch<SendToEditResponse>('/api/videos/send-to-edit', {
+        method: 'POST',
+        body: JSON.stringify({
+          aweme_ids: awemeIds,
+          auto_process: true,
+          profile: 'detailed',
+        }),
+      })
+      setEditStudioBanner({
+        status: 'success',
+        message: `Đã gửi ${res.item_ids.length} video sang Edit Studio để phân tích.`,
+        studioUrl: res.studio_url,
+      })
+      if (previewVideo && awemeIds.includes(previewVideo.aweme_id) && res.item_ids[0]) {
+        setPreviewVideo({
+          ...previewVideo,
+          edit_item_id: res.item_ids[0],
+          edit_list_id: res.list_id,
+        })
+      }
+      await Promise.all([loadLibrary(), loadBookmarks(), loadAnalyzed(), refreshCoreStatus()])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Không thể gửi video sang Edit Studio'
+      setEditStudioBanner({
+        status: 'error',
+        message: `Lỗi gửi sang Edit Studio: ${msg}`,
+      })
+      await Promise.all([loadLibrary(), loadBookmarks(), loadAnalyzed()])
+    } finally {
+      setSendingEditIds((prev) => prev.filter((id) => !awemeIds.includes(id)))
+    }
+  }
+
+  const handleClearEditStatus = async (awemeId: string) => {
+    setConfirmDialog({
+      title: 'Bỏ khỏi danh sách Đã gửi Phân tích?',
+      description: `Bạn có chắc chắn muốn gỡ video #${awemeId} khỏi danh sách đã gửi phân tích không? (Video gốc trong Thư viện vẫn được giữ nguyên).`,
+      confirmLabel: 'Xác nhận bỏ',
+      onConfirm: async () => {
+        await apiFetch(`/api/videos/${awemeId}/edit-status`, {
+          method: 'DELETE',
+        })
+        await Promise.all([loadLibrary(), loadBookmarks(), loadAnalyzed(), refreshCoreStatus()])
+      },
+    })
+  }
+
+  const handleSaveStudioSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const res = await apiFetch<EditStudioConfig>('/api/settings/edit-studio', {
+      method: 'PUT',
+      body: JSON.stringify({
+        host: studioHost.trim() || '127.0.0.1',
+        port: Number(studioPort) || 8000,
+      }),
+    })
+    setStudioHost(res.host)
+    setStudioPort(res.port)
+    if (antiBot) {
+      setAntiBot({
+        ...antiBot,
+        edit_studio_host: res.host,
+        edit_studio_port: res.port,
+      })
+    }
+    setStudioSavedNotice(true)
+    window.setTimeout(() => setStudioSavedNotice(false), 2000)
+    await Promise.all([loadLibrary(), loadBookmarks(), loadAnalyzed()])
   }
 
   const handleToggleBookmark = async (video: VideoItem) => {
@@ -449,10 +740,13 @@ export function App() {
     setSingleInputsText('')
     setSingleStatusMessage(
       res.status === 'SCHEDULED'
-        ? `Đã hẹn giờ quét ${res.count} ID/link (Mã phiên #${res.log_id})`
-        : `Đang chạy quét ngay ${res.count} ID/link (Mã phiên #${res.log_id})`,
+        ? `Đã hẹn giờ quét ${res.count} ID/link (#${res.log_id})`
+        : `Đang chạy quét ${res.count} ID/link (#${res.log_id})`,
     )
     await Promise.all([refreshCoreStatus(), loadLogs(), loadLibrary()])
+    if (res.status !== 'SCHEDULED') {
+      openLogTerminal(res.log_id)
+    }
   }
 
   const openCreateTargetModal = () => {
@@ -536,6 +830,35 @@ export function App() {
   const handleRunTargetNow = async (targetId: number) => {
     await apiFetch(`/api/targets/${targetId}/run`, { method: 'POST' })
     await Promise.all([refreshCoreStatus(), loadLogs()])
+    openLogTerminal(null)
+  }
+
+  const handleQuickCrawlTopic = async (topic: SuggestedTopicItem) => {
+    const existing = targets.find(
+      (t) => t.target_type === 'KEYWORD' && t.target_value === topic.keyword,
+    )
+    let targetId = existing?.id
+    if (!targetId) {
+      const created = await apiFetch<CrawlTargetItem>('/api/targets', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `Xu hướng: ${topic.label}`,
+          target_type: 'KEYWORD',
+          target_value: topic.keyword,
+          cron_expr: '0 */6 * * *',
+          schedule_type: 'INTERVAL',
+          schedule_config: { every: 6, unit: 'hours' },
+          run_at: null,
+          auto_download: false,
+          max_items_per_run: 30,
+          is_active: true,
+        }),
+      })
+      targetId = created.id
+    }
+    await apiFetch(`/api/targets/${targetId}/run`, { method: 'POST' })
+    await Promise.all([refreshCoreStatus(), loadLogs()])
+    openLogTerminal(null)
   }
 
   const handleToggleTargetActive = async (target: CrawlTargetItem) => {
@@ -547,8 +870,16 @@ export function App() {
   }
 
   const handleDeleteTarget = async (targetId: number) => {
-    await apiFetch(`/api/targets/${targetId}`, { method: 'DELETE' })
-    await refreshCoreStatus()
+    const targetObj = targets.find((t) => t.id === targetId)
+    setConfirmDialog({
+      title: 'Xóa mục tiêu quét?',
+      description: `Bạn có chắc chắn muốn xóa mục tiêu "${targetObj?.name || `#${targetId}`}"? Các lịch hẹn giờ của mục tiêu này sẽ dừng lại.`,
+      confirmLabel: 'Xóa mục tiêu',
+      onConfirm: async () => {
+        await apiFetch(`/api/targets/${targetId}`, { method: 'DELETE' })
+        await refreshCoreStatus()
+      },
+    })
   }
 
   const handleRetryLog = async (logId: number) => {
@@ -557,13 +888,35 @@ export function App() {
   }
 
   const handleDeleteLog = async (logId: number) => {
-    await apiFetch(`/api/logs/${logId}`, { method: 'DELETE' })
-    await loadLogs()
+    setConfirmDialog({
+      title: `Xóa bản ghi lịch sử #${logId}?`,
+      description: `Bạn có chắc chắn muốn xóa vĩnh viễn bản ghi phiên chạy #${logId} khỏi lịch sử?`,
+      confirmLabel: 'Xóa bản ghi',
+      onConfirm: async () => {
+        await apiFetch(`/api/logs/${logId}`, { method: 'DELETE' })
+        await loadLogs()
+      },
+    })
   }
 
   const handleClearCompletedLogs = async () => {
-    await apiFetch('/api/logs', { method: 'DELETE' })
-    await loadLogs()
+    setConfirmDialog({
+      title: 'Dọn toàn bộ lịch sử đã hoàn tất?',
+      description: 'Tất cả các bản ghi phiên chạy đã kết thúc (Thành công / Thất bại) sẽ bị xóa khỏi danh sách lịch sử.',
+      confirmLabel: 'Dọn lịch sử',
+      onConfirm: async () => {
+        await apiFetch('/api/logs', { method: 'DELETE' })
+        await loadLogs()
+      },
+    })
+  }
+
+  const handleToggleHeadless = async (nextHeadless: boolean) => {
+    const updated = await apiFetch<AntiBotSettings>('/api/settings/anti-bot', {
+      method: 'PUT',
+      body: JSON.stringify({ headless_mode: nextHeadless }),
+    })
+    setAntiBot(updated)
   }
 
   const handleApplyPreset = async (preset: PresetName) => {
@@ -610,6 +963,12 @@ export function App() {
       icon: Bookmark,
       badge: stats.bookmarked_videos || undefined,
     },
+    {
+      id: 'analyzed',
+      label: 'Đã gửi Phân tích',
+      icon: Send,
+      badge: analyzedPage.total || undefined,
+    },
     { id: 'single-crawl', label: 'Crawl 1 ID / Link', icon: Link2 },
     {
       id: 'targets',
@@ -621,29 +980,114 @@ export function App() {
       id: 'history',
       label: 'Lịch sử chạy',
       icon: History,
-      badge: stats.running_jobs > 0 ? `${stats.running_jobs} chạy` : undefined,
+      badge: stats.running_jobs > 0 ? stats.running_jobs : undefined,
     },
+    { id: 'studio-settings', label: 'Server Phân tích', icon: Server },
     { id: 'anti-bot', label: 'Cấu hình Chống Bot', icon: ShieldCheck },
   ]
 
-  return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      {/* Left Sidebar cố định bên trái */}
-      <aside className="w-64 shrink-0 border-r bg-sidebar flex flex-col justify-between">
-        <div className="p-4 space-y-6">
-          <div className="flex items-center gap-3 px-2">
-            <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground font-bold shadow">
-              DY
+  const currentNavTitle =
+    navItems.find((item) => item.id === activeSection)?.label || 'Tổng quan'
+
+  if (!isAuthenticated) {
+    return (
+      <div className="flex min-h-screen w-screen items-center justify-center bg-background text-foreground p-4">
+        <Card className="surface-standard w-full max-w-sm">
+          <CardHeader className="space-y-2 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="relative shrink-0">
+                <BrandLogo size={34} className="rounded-lg shadow-sm" />
+                <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full bg-card border border-border text-muted-foreground">
+                  <Lock className="size-2.5" />
+                </span>
+              </div>
+              <div>
+                <CardTitle className="text-base font-semibold tracking-tight">
+                  Đăng nhập Quản trị
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Douyin Crawler & Lưu trữ Nội bộ
+                </CardDescription>
+              </div>
             </div>
-            <div>
-              <div className="font-bold tracking-tight text-base">Douyin Crawler</div>
-              <div className="text-[11px] text-muted-foreground">
-                Studio Thu Thập & Tải Không Logo
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-3.5" onSubmit={(e) => void handleAdminLogin(e)}>
+              <div className="space-y-1.5">
+                <Label htmlFor="admin-login-username" className="text-xs">
+                  Tên đăng nhập
+                </Label>
+                <Input
+                  id="admin-login-username"
+                  aria-label="Tên đăng nhập"
+                  autoComplete="username"
+                  placeholder="admin"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="admin-login-password" className="text-xs">
+                  Mật khẩu
+                </Label>
+                <Input
+                  id="admin-login-password"
+                  aria-label="Mật khẩu"
+                  type="password"
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  required
+                />
+              </div>
+
+              {loginError && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {loginError}
+                </div>
+              )}
+
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={loginLoading}
+              >
+                {loginLoading ? 'Đang xác thực...' : 'Đăng nhập hệ thống'}
+              </Button>
+
+              <p className="text-[11px] text-muted-foreground text-center pt-1">
+                Phiên đăng nhập tự động khóa khi đóng trình duyệt.
+              </p>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative flex h-screen w-screen overflow-hidden bg-background text-foreground p-2.5 gap-2.5">
+      {/* =====================================================================
+          QUIET LIQUID GLASS SIDEBAR
+         ===================================================================== */}
+      <aside className="lg-regular w-56 shrink-0 rounded-2xl flex flex-col justify-between z-30">
+        <div className="p-3 space-y-4">
+          <div className="flex items-center gap-2.5 px-2.5 pt-1">
+            <BrandLogo size={30} className="shrink-0 rounded-lg shadow-xs" />
+            <div className="min-w-0">
+              <div className="font-semibold tracking-tight text-sm leading-tight truncate">
+                Douyin Crawler
+              </div>
+              <div className="text-[11px] text-muted-foreground truncate">
+                Quản lý & Lưu trữ
               </div>
             </div>
           </div>
 
-          <nav className="space-y-1">
+          <nav aria-label="Điều hướng chính" className="space-y-0.5">
             {navItems.map((item) => {
               const Icon = item.icon
               const active = activeSection === item.id
@@ -652,23 +1096,20 @@ export function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveSection(item.id)}
-                  className={`w-full flex items-center justify-between rounded-xl px-3 py-2.5 text-sm font-medium transition ${
+                  className={`w-full min-h-[34px] flex items-center justify-between rounded-lg px-2.5 py-1.5 text-[13px] transition ${
                     active
-                      ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+                      ? 'bg-foreground/[0.08] text-foreground font-medium'
+                      : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground'
                   }`}
                 >
                   <span className="flex items-center gap-2.5">
-                    <Icon className="size-4" />
+                    <Icon className="size-4 shrink-0 opacity-75" />
                     <span>{item.label}</span>
                   </span>
                   {item.badge !== undefined && (
-                    <Badge
-                      variant={active ? 'secondary' : 'outline'}
-                      className="text-[10px] px-1.5 py-0"
-                    >
+                    <span className="font-mono tabular-nums text-[11px] text-muted-foreground">
                       {item.badge}
-                    </Badge>
+                    </span>
                   )}
                 </button>
               )
@@ -676,101 +1117,108 @@ export function App() {
           </nav>
         </div>
 
-        {/* Trạng thái phiên & chống bot ở chân Sidebar */}
-        <div className="p-4 border-t space-y-3 bg-muted/20">
+        {/* Trạng thái phiên gọn nhẹ ở chân Sidebar */}
+        <div className="p-3 m-2 rounded-xl border border-border/80 bg-card/50 space-y-2.5">
           <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">Phiên Douyin:</span>
-            <Badge
-              variant={
-                browserStatus === 'AUTHENTICATED'
-                  ? 'default'
-                  : browserStatus === 'CAPTCHA_REQUIRED'
-                    ? 'destructive'
-                    : 'secondary'
-              }
-              className="text-[10px]"
-            >
+            <span className="text-muted-foreground">Phiên Douyin</span>
+            <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+              <span
+                className={`size-1.5 rounded-full ${
+                  browserStatus === 'AUTHENTICATED'
+                    ? 'bg-foreground'
+                    : browserStatus === 'CAPTCHA_REQUIRED'
+                      ? 'bg-destructive'
+                      : 'bg-muted-foreground'
+                }`}
+              />
               {browserStatus === 'AUTHENTICATED'
-                ? 'Đã đăng nhập'
+                ? 'Đã kết nối'
                 : browserStatus === 'CAPTCHA_REQUIRED'
-                  ? 'Dính Captcha!'
-                  : browserStatus === 'LOGIN_IN_PROGRESS'
-                    ? 'Đang mở...'
-                    : 'Cần đăng nhập'}
-            </Badge>
+                  ? 'Captcha'
+                  : 'Chưa đăng nhập'}
+            </span>
           </div>
+          {antiBot && (
+            <div className="flex items-center justify-between text-xs pt-1 border-t border-border/60">
+              <span className="text-muted-foreground" title="Bật để chạy ngầm không hiện cửa sổ Chrome khi cào">
+                Chạy ẩn (Headless)
+              </span>
+              <Switch
+                aria-label="Chạy ẩn trình duyệt (Headless)"
+                checked={Boolean(antiBot.headless_mode)}
+                onCheckedChange={(v) => void handleToggleHeadless(v)}
+              />
+            </div>
+          )}
           <Button
-            size="sm"
-            variant={browserStatus === 'CAPTCHA_REQUIRED' ? 'destructive' : 'outline'}
-            className="w-full text-xs"
+            size="xs"
+            variant="outline"
+            className="w-full"
             disabled={browserStatus === 'LOGIN_IN_PROGRESS'}
             onClick={() => void handleOpenLoginBrowser()}
           >
             {browserStatus === 'CAPTCHA_REQUIRED'
-              ? 'Mở Chromium giải Captcha'
-              : 'Mở Chromium đăng nhập QR'}
+              ? 'Mở trình duyệt giải Captcha'
+              : 'Mở trình duyệt đăng nhập'}
           </Button>
-          {antiBot && (
-            <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-1">
-              <span>Chế độ Chống Bot:</span>
-              <span className="font-semibold text-emerald-400">{antiBot.preset}</span>
-            </div>
-          )}
+          <div className="flex items-center justify-between pt-1.5 border-t border-border/60 text-xs">
+            <span className="text-muted-foreground truncate font-mono text-[11px]">
+              @{adminUsername}
+            </span>
+            <Button
+              size="xs"
+              variant="ghost"
+              className="h-6 px-2 text-muted-foreground hover:text-foreground"
+              onClick={() => void handleAdminLogout()}
+            >
+              <LogOut className="size-3 mr-1" />
+              Đăng xuất
+            </Button>
+          </div>
         </div>
       </aside>
 
-      {/* Vùng nội dung chính bên phải */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Topbar trạng thái toàn cục */}
-        <header className="h-14 shrink-0 border-b px-6 flex items-center justify-between bg-card/50 backdrop-blur">
-          <div className="flex items-center gap-3 text-sm">
-            <span className="font-semibold text-muted-foreground">
-              Trạng thái đăng nhập Douyin:
+      {/* =====================================================================
+          MAIN VIEWPORT
+         ===================================================================== */}
+      <div className="relative flex-1 flex flex-col min-w-0 overflow-hidden rounded-2xl">
+        {/* QUIET LIQUID GLASS TOP BAR */}
+        <header className="lg-regular absolute top-0 left-0 right-0 z-30 h-12 px-4 rounded-xl flex items-center justify-between">
+          <div className="flex items-center gap-2.5 text-xs">
+            <span className="font-semibold text-sm text-foreground">
+              {currentNavTitle}
             </span>
-            <Badge
-              variant={
-                browserStatus === 'AUTHENTICATED'
-                  ? 'default'
-                  : browserStatus === 'CAPTCHA_REQUIRED'
-                    ? 'destructive'
-                    : 'outline'
-              }
-            >
-              {browserStatus}
-            </Badge>
             {stats.running_jobs > 0 && (
-              <Badge variant="secondary" className="gap-1.5 animate-pulse">
-                <Activity className="size-3.5 text-cyan-400" />
-                Đang chạy {stats.running_jobs} tác vụ
-              </Badge>
+              <span className="text-muted-foreground font-mono tabular-nums">
+                · Đang chạy {stats.running_jobs} tác vụ
+              </span>
             )}
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-2 rounded-lg border px-3 py-1 text-xs">
-              <span className="text-muted-foreground">Bộ hẹn giờ (Scheduler):</span>
-              <Badge variant={schedulerStatus.paused ? 'secondary' : 'default'}>
-                {schedulerStatus.paused ? 'Đang tạm dừng' : 'Đang hoạt động'}
-              </Badge>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-xs"
-                onClick={() => void handleToggleScheduler()}
-              >
-                {schedulerStatus.paused ? (
-                  <>
-                    <PlayCircle className="size-3.5 mr-1 text-emerald-400" /> Tiếp tục
-                  </>
-                ) : (
-                  <>
-                    <PauseCircle className="size-3.5 mr-1 text-amber-400" /> Tạm dừng
-                  </>
-                )}
-              </Button>
-            </div>
+          <div className="flex items-center gap-2">
             <Button
-              size="sm"
+              size="xs"
+              variant="ghost"
+              onClick={() => void handleToggleScheduler()}
+            >
+              Scheduler: {schedulerStatus.paused ? 'Tạm dừng' : 'Đang bật'}
+            </Button>
+            <Button
+              size="xs"
+              variant={terminalOpen ? 'secondary' : 'outline'}
+              onClick={() => {
+                if (terminalOpen) {
+                  setTerminalOpen(false)
+                } else {
+                  openLogTerminal(selectedTerminalLogId)
+                }
+              }}
+            >
+              <Terminal className="size-3.5 mr-1" />
+              Nhật ký
+            </Button>
+            <Button
+              size="xs"
               variant="outline"
               onClick={() => {
                 void refreshCoreStatus()
@@ -779,158 +1227,207 @@ export function App() {
                 void loadLogs()
               }}
             >
-              <RefreshCw className="size-3.5 mr-1.5" /> Đồng bộ
+              <RefreshCw className="size-3.5 mr-1" /> Làm mới
             </Button>
           </div>
         </header>
 
-        {/* Cảnh báo nổi bật nếu phát hiện Captcha */}
-        {browserStatus === 'CAPTCHA_REQUIRED' && (
-          <div className="bg-destructive/15 border-b border-destructive/40 px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-2.5 text-sm text-destructive">
-              <AlertTriangle className="size-5 shrink-0" />
-              <span>
-                <strong>Phát hiện Captcha từ Douyin!</strong> Hệ thống Chống Bot đã tự động dừng
-                phiên quét để bảo vệ tài khoản. Hãy mở Chromium để kéo hình xác thực.
-              </span>
-            </div>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => void handleOpenLoginBrowser()}
-            >
-              Mở Chromium giải Captcha ngay
-            </Button>
-          </div>
-        )}
+        {/* CONTENT LAYER */}
+        <main className="scroll-edge-top flex-1 overflow-y-auto pt-15 pb-8 px-2">
+          <div className="mx-auto max-w-6xl space-y-5">
+            {browserStatus === 'CAPTCHA_REQUIRED' && (
+              <div className="surface-standard border-destructive/30 rounded-xl px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs text-destructive">
+                  <AlertTriangle className="size-4 shrink-0" />
+                  <span>
+                    Phát hiện yêu cầu xác thực Captcha từ Douyin. Hãy mở trình duyệt để xác thực.
+                  </span>
+                </div>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  onClick={() => void handleOpenLoginBrowser()}
+                >
+                  Giải Captcha
+                </Button>
+              </div>
+            )}
 
-        {/* Nội dung từng phân khu của Sidebar */}
-        <main className="flex-1 overflow-y-auto p-6">
-          <div className="mx-auto max-w-7xl space-y-6">
+            {editStudioBanner && (
+              <div className="surface-standard rounded-xl px-4 py-2.5 flex items-center justify-between text-xs">
+                <span>{editStudioBanner.message}</span>
+                <div className="flex items-center gap-2">
+                  {editStudioBanner.studioUrl && (
+                    <Button
+                      size="xs"
+                      variant="default"
+                      onClick={() => window.open(editStudioBanner.studioUrl, '_blank')}
+                    >
+                      <ExternalLink className="size-3.5 mr-1" />
+                      Mở Studio
+                    </Button>
+                  )}
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => setEditStudioBanner(null)}
+                  >
+                    Đóng
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {activeSection === 'overview' && (
-              <div className="space-y-6">
+              <div className="space-y-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h1 className="text-2xl font-bold tracking-tight">
+                    <h1 className="text-lg font-semibold tracking-tight">
                       Tổng quan Hệ thống Douyin Crawler
                     </h1>
-                    <p className="text-sm text-muted-foreground">
-                      Giám sát thu thập dữ liệu, kho video không logo, Bookmark và lịch chạy tự động.
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Theo dõi kho video, mục đã lưu và các lịch thu thập tự động.
                     </p>
                   </div>
                   <div className="flex gap-2">
-                    <Button size="sm" onClick={() => setActiveSection('single-crawl')}>
-                      <Link2 className="size-4 mr-1.5" /> Crawl nhanh 1 ID / Link
-                    </Button>
                     <Button
                       size="sm"
-                      variant="secondary"
+                      variant="outline"
                       onClick={() => {
                         setActiveSection('targets')
                         openCreateTargetModal()
                       }}
                     >
-                      <Plus className="size-4 mr-1.5" /> Thêm Mục tiêu Hẹn giờ
+                      <Plus className="size-3.5 mr-1.5" /> Thêm lịch quét
+                    </Button>
+                    <Button size="sm" variant="default" onClick={() => setActiveSection('single-crawl')}>
+                      <Link2 className="size-3.5 mr-1.5" /> Crawl nhanh 1 ID / Link
                     </Button>
                   </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  <Card
-                    className="cursor-pointer hover:border-primary/50"
+                {/* Dải thống kê nhẹ nhàng, đơn sắc */}
+                <div className="surface-standard rounded-xl overflow-hidden grid sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-border">
+                  <button
+                    type="button"
                     onClick={() => setActiveSection('library')}
+                    className="p-4 text-left hover:bg-muted/40 transition space-y-1"
                   >
-                    <CardHeader className="pb-2">
-                      <CardDescription>Tổng bài đã Crawl</CardDescription>
-                      <CardTitle className="text-3xl font-bold">
-                        {formatNumber(stats.total_videos)}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-xs text-muted-foreground flex items-center justify-between">
-                      <span>Đã tải không logo: {stats.downloaded_videos}</span>
-                      <Film className="size-4 text-primary" />
-                    </CardContent>
-                  </Card>
+                    <div className="text-xs text-muted-foreground">Tổng video</div>
+                    <div className="font-mono tabular-nums text-2xl font-semibold">
+                      {formatNumber(stats.total_videos)}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground font-mono tabular-nums">
+                      Đã tải về: {stats.downloaded_videos}
+                    </div>
+                  </button>
 
-                  <Card
-                    className="cursor-pointer hover:border-primary/50"
+                  <button
+                    type="button"
                     onClick={() => setActiveSection('bookmarks')}
+                    className="p-4 text-left hover:bg-muted/40 transition space-y-1"
                   >
-                    <CardHeader className="pb-2">
-                      <CardDescription>Video Đã Bookmark</CardDescription>
-                      <CardTitle className="text-3xl font-bold text-amber-400">
-                        {formatNumber(stats.bookmarked_videos)}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-xs text-muted-foreground flex items-center justify-between">
-                      <span>{collections.length} bộ sưu tập phân loại</span>
-                      <Bookmark className="size-4 text-amber-400" />
-                    </CardContent>
-                  </Card>
+                    <div className="text-xs text-muted-foreground">Đã Bookmark</div>
+                    <div className="font-mono tabular-nums text-2xl font-semibold">
+                      {formatNumber(stats.bookmarked_videos)}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground font-mono tabular-nums">
+                      {collections.length} bộ sưu tập
+                    </div>
+                  </button>
 
-                  <Card
-                    className="cursor-pointer hover:border-primary/50"
+                  <button
+                    type="button"
                     onClick={() => setActiveSection('targets')}
+                    className="p-4 text-left hover:bg-muted/40 transition space-y-1"
                   >
-                    <CardHeader className="pb-2">
-                      <CardDescription>Mục tiêu Hẹn giờ Active</CardDescription>
-                      <CardTitle className="text-3xl font-bold text-cyan-400">
-                        {stats.active_targets} / {stats.total_targets}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-xs text-muted-foreground flex items-center justify-between">
-                      <span>{schedulerStatus.jobs_count} lịch trong Scheduler</span>
-                      <CalendarClock className="size-4 text-cyan-400" />
-                    </CardContent>
-                  </Card>
+                    <div className="text-xs text-muted-foreground">Lịch hẹn giờ</div>
+                    <div className="font-mono tabular-nums text-2xl font-semibold">
+                      {stats.active_targets} <span className="text-sm font-normal text-muted-foreground">/ {stats.total_targets}</span>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground font-mono tabular-nums">
+                      {schedulerStatus.jobs_count} tác vụ đang bật
+                    </div>
+                  </button>
 
-                  <Card
-                    className="cursor-pointer hover:border-primary/50"
+                  <button
+                    type="button"
                     onClick={() => setActiveSection('history')}
+                    className="p-4 text-left hover:bg-muted/40 transition space-y-1"
                   >
-                    <CardHeader className="pb-2">
-                      <CardDescription>Phiên chạy Thành công / Lỗi</CardDescription>
-                      <CardTitle className="text-3xl font-bold text-emerald-400">
-                        {stats.completed_jobs}{' '}
-                        <span className="text-base font-normal text-rose-400">
-                          / {stats.failed_jobs} lỗi
-                        </span>
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-xs text-muted-foreground flex items-center justify-between">
-                      <span>Đang chạy: {stats.running_jobs}</span>
-                      <History className="size-4 text-emerald-400" />
-                    </CardContent>
-                  </Card>
+                    <div className="text-xs text-muted-foreground">Phiên hoàn tất</div>
+                    <div className="font-mono tabular-nums text-2xl font-semibold">
+                      {stats.completed_jobs}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground font-mono tabular-nums">
+                      Lỗi: {stats.failed_jobs} · Đang chạy: {stats.running_jobs}
+                    </div>
+                  </button>
                 </div>
 
-                <div className="grid gap-6 lg:grid-cols-12">
-                  <Card className="lg:col-span-7">
-                    <CardHeader className="flex flex-row items-center justify-between pb-3">
+                {/* Từ khóa & Hashtag tối giản */}
+                {trends &&
+                  ((trends.trending_hashtags?.length ?? 0) > 0 ||
+                    (trends.suggested_topics?.length ?? 0) > 0) && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-muted-foreground mr-1">Xu hướng:</span>
+                      {(trends.trending_hashtags ?? []).slice(0, 8).map((item) => (
+                        <button
+                          key={item.tag}
+                          type="button"
+                          onClick={() => {
+                            setLibraryFilters({
+                              ...libraryFilters,
+                              search: item.tag,
+                              page: 1,
+                            })
+                            setActiveSection('library')
+                          }}
+                          className="inline-flex min-h-[28px] items-center gap-1 rounded-full border border-border bg-card hover:bg-muted px-2.5 py-0.5 text-xs transition"
+                        >
+                          <span>#{item.tag}</span>
+                          <span className="font-mono tabular-nums text-[11px] text-muted-foreground">
+                            {item.video_count}
+                          </span>
+                        </button>
+                      ))}
+                      {(trends.suggested_topics ?? []).map((topic) => (
+                        <button
+                          key={topic.keyword}
+                          type="button"
+                          onClick={() => void handleQuickCrawlTopic(topic)}
+                          className="inline-flex min-h-[28px] items-center gap-1 rounded-full border border-border bg-card hover:bg-muted px-2.5 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
+                        >
+                          <span>+ {topic.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                <div className="grid gap-5 lg:grid-cols-12">
+                  <Card className="surface-standard lg:col-span-7">
+                    <CardHeader className="flex flex-row items-center justify-between pb-2">
                       <div>
-                        <CardTitle className="text-base">
-                          Bài đăng mới thu thập gần nhất
+                        <CardTitle className="text-sm font-semibold">
+                          Bài đăng mới thu thập
                         </CardTitle>
-                        <CardDescription>
-                          Hiển thị sẵn thời lượng video (MM:SS), thời gian đăng và chỉ số tương tác
-                        </CardDescription>
                       </div>
                       <Button
-                        size="sm"
+                        size="xs"
                         variant="ghost"
                         onClick={() => setActiveSection('library')}
                       >
                         Xem tất cả →
                       </Button>
                     </CardHeader>
-                    <CardContent className="space-y-2.5">
+                    <CardContent className="divide-y divide-border">
                       {videosPage.items.slice(0, 5).map((v) => (
                         <div
                           key={v.aweme_id}
                           onClick={() => setPreviewVideo(v)}
-                          className="flex items-center gap-3 rounded-xl border p-2.5 hover:bg-muted/40 cursor-pointer"
+                          className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0 hover: opacity-95 cursor-pointer"
                         >
-                          <div className="relative h-14 w-24 rounded-lg bg-slate-900 overflow-hidden shrink-0">
+                          <div className="relative h-12 w-20 rounded-md bg-muted overflow-hidden shrink-0">
                             {v.cover_url && (
                               <img
                                 src={v.cover_url}
@@ -938,82 +1435,84 @@ export function App() {
                                 className="h-full w-full object-cover"
                               />
                             )}
-                            <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.2 text-[10px] font-mono text-white">
+                            <span className="lg-clear absolute bottom-1 right-1 rounded px-1 py-0 text-[10px] font-mono tabular-nums">
                               {v.aweme_type === 68
                                 ? `${v.image_count} ảnh`
                                 : formatDurationMs(v.duration_ms)}
                             </span>
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">
+                            <p className="truncate text-xs font-medium">
                               {v.description || v.aweme_id}
                             </p>
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                              <span className="font-medium text-foreground">
-                                @{v.author_nickname}
-                              </span>
-                              <span>· Đăng: {formatDateTime(v.create_time)}</span>
-                              <span>· ❤ {formatNumber(v.digg_count)}</span>
+                            <div className="text-[11px] text-muted-foreground mt-0.5 font-mono tabular-nums">
+                              <span className="font-sans">@{v.author_nickname}</span> ·{' '}
+                              {formatDateTime(v.create_time)} · {formatNumber(v.digg_count)} tim
                             </div>
                           </div>
-                          <Badge variant="outline" className="text-[10px]">
-                            {v.download_status}
-                          </Badge>
+                          <div
+                            className="flex items-center gap-1.5 shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <span className="text-[11px] text-muted-foreground font-mono">
+                              {v.download_status === 'COMPLETED' ? 'Đã tải' : ''}
+                            </span>
+                          </div>
                         </div>
                       ))}
                       {videosPage.items.length === 0 && (
-                        <p className="text-sm text-muted-foreground py-8 text-center">
-                          Chưa có video nào được thu thập. Hãy chạy quét mục tiêu hoặc Crawl 1 ID.
+                        <p className="text-xs text-muted-foreground py-8 text-center">
+                          Chưa có video nào được thu thập.
                         </p>
                       )}
                     </CardContent>
                   </Card>
 
-                  <Card className="lg:col-span-5">
-                    <CardHeader className="flex flex-row items-center justify-between pb-3">
+                  <Card className="surface-standard lg:col-span-5">
+                    <CardHeader className="flex flex-row items-center justify-between pb-2">
                       <div>
-                        <CardTitle className="text-base">Hoạt động chạy gần đây</CardTitle>
-                        <CardDescription>Lịch sử các phiên quét gần nhất</CardDescription>
+                        <CardTitle className="text-sm font-semibold">Phiên chạy gần đây</CardTitle>
                       </div>
                       <Button
-                        size="sm"
+                        size="xs"
                         variant="ghost"
                         onClick={() => setActiveSection('history')}
                       >
                         Chi tiết →
                       </Button>
                     </CardHeader>
-                    <CardContent className="space-y-2.5">
+                    <CardContent className="divide-y divide-border">
                       {logsPage.items.slice(0, 6).map((log) => (
                         <div
                           key={log.id}
-                          className="flex items-center justify-between rounded-xl border p-2.5 text-xs"
+                          className="flex items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0 text-xs"
                         >
                           <div className="space-y-0.5 min-w-0">
                             <div className="font-medium truncate">
                               {log.target_name || log.input_summary || `Phiên #${log.id}`}
                             </div>
-                            <div className="text-muted-foreground">
+                            <div className="text-muted-foreground font-mono tabular-nums text-[11px]">
                               {formatDateTime(log.started_at)} ·{' '}
                               {formatExecutionDuration(log.duration_ms)} · +{log.new_videos_count}{' '}
                               mới
                             </div>
                           </div>
-                          <Badge
-                            variant={
-                              log.status === 'SUCCESS'
-                                ? 'default'
-                                : log.status === 'RUNNING'
-                                  ? 'secondary'
-                                  : 'destructive'
-                            }
-                          >
-                            {log.status}
-                          </Badge>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => openLogTerminal(log.id)}
+                            >
+                              Log
+                            </Button>
+                            <Badge variant="outline" className="font-mono text-[10px] font-normal">
+                              {log.status}
+                            </Badge>
+                          </div>
                         </div>
                       ))}
                       {logsPage.items.length === 0 && (
-                        <p className="text-sm text-muted-foreground py-8 text-center">
+                        <p className="text-xs text-muted-foreground py-8 text-center">
                           Chưa có lịch sử chạy nào.
                         </p>
                       )}
@@ -1026,11 +1525,13 @@ export function App() {
             {activeSection === 'library' && (
               <VideoListSection
                 title="Thư viện Bài đăng Đã Crawl"
-                subtitle="Hiển thị đầy đủ Metadata, thời lượng phát của video (MM:SS), thời gian đăng & thời gian thu thập."
+                subtitle="Danh sách video và album đã thu thập."
                 videos={videosPage.items}
                 total={videosPage.total}
                 pageSize={videosPage.page_size}
                 targets={targets}
+                trends={trends}
+                editStudioBaseUrl={editStudioBaseUrl}
                 filters={libraryFilters}
                 onFiltersChange={setLibraryFilters}
                 onRefresh={loadLibrary}
@@ -1039,19 +1540,24 @@ export function App() {
                 onToggleBookmark={handleToggleBookmark}
                 onBatchBookmark={handleBatchBookmark}
                 onPreview={(v) => setPreviewVideo(v)}
+                onQuickCrawlTopic={handleQuickCrawlTopic}
+                onSendToEdit={handleSendToEdit}
+                sendingEditIds={sendingEditIds}
               />
             )}
 
             {activeSection === 'bookmarks' && (
               <VideoListSection
                 title="Kho Video Đã Bookmark"
-                subtitle="Quản lý các video tâm đắc theo bộ sưu tập, ghi chú ý tưởng và đồng bộ mục Đã lưu (Collect) từ Douyin."
+                subtitle="Các bài đăng đã đánh dấu và đồng bộ từ Douyin."
                 videos={bookmarksPage.items}
                 total={bookmarksPage.total}
                 pageSize={bookmarksPage.page_size}
                 targets={targets}
                 collections={collections}
+                trends={trends}
                 bookmarkOnly
+                editStudioBaseUrl={editStudioBaseUrl}
                 filters={bookmarkFilters}
                 onFiltersChange={setBookmarkFilters}
                 onRefresh={loadBookmarks}
@@ -1061,36 +1567,63 @@ export function App() {
                 onBatchBookmark={handleBatchBookmark}
                 onPreview={(v) => setPreviewVideo(v)}
                 onSyncDouyinCollect={handleSyncDouyinCollect}
+                onSendToEdit={handleSendToEdit}
+                sendingEditIds={sendingEditIds}
+              />
+            )}
+
+            {activeSection === 'analyzed' && (
+              <VideoListSection
+                title="Video Đã Đẩy Sang Phân Tích"
+                subtitle={`Danh sách các bài đăng đã gửi sang Server Phân tích (${editStudioBaseUrl}).`}
+                videos={analyzedPage.items}
+                total={analyzedPage.total}
+                pageSize={analyzedPage.page_size}
+                targets={targets}
+                analyzedOnly
+                editStudioBaseUrl={editStudioBaseUrl}
+                onOpenStudioSettings={() => setActiveSection('studio-settings')}
+                onClearEditStatus={handleClearEditStatus}
+                filters={analyzedFilters}
+                onFiltersChange={setAnalyzedFilters}
+                onRefresh={loadAnalyzed}
+                onDownloadSingle={handleDownloadSingle}
+                onBatchDownload={handleBatchDownload}
+                onToggleBookmark={handleToggleBookmark}
+                onBatchBookmark={handleBatchBookmark}
+                onPreview={(v) => setPreviewVideo(v)}
+                onSendToEdit={handleSendToEdit}
+                sendingEditIds={sendingEditIds}
               />
             )}
 
             {activeSection === 'single-crawl' && (
-              <div className="space-y-6">
+              <div className="space-y-5">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight">
+                  <h1 className="text-lg font-semibold tracking-tight">
                     Crawl theo ID / Link Chia Sẻ Douyin
                   </h1>
-                  <p className="text-sm text-muted-foreground">
-                    Nhập mã aweme_id, link video/note đầy đủ hoặc dán nguyên đoạn văn bản chia sẻ chứa link rút gọn v.douyin.com.
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Nhập mã aweme_id, link video/note hoặc dán văn bản chia sẻ từ ứng dụng Douyin.
                   </p>
                 </div>
 
-                <div className="grid gap-6 lg:grid-cols-12">
-                  <Card className="lg:col-span-7">
+                <div className="grid gap-5 lg:grid-cols-12">
+                  <Card className="surface-standard lg:col-span-7">
                     <CardHeader>
-                      <CardTitle className="text-base">Nhập danh sách ID hoặc Link</CardTitle>
-                      <CardDescription>
-                        Hỗ trợ nhập 1 hoặc nhiều dòng (mỗi dòng 1 mã ID hoặc 1 đoạn link chia sẻ từ app Douyin)
+                      <CardTitle className="text-sm font-semibold">Danh sách ID hoặc Link</CardTitle>
+                      <CardDescription className="text-xs">
+                        Mỗi dòng một mã ID hoặc một đường dẫn chia sẻ
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
                       <form className="space-y-4" onSubmit={(e) => void handleSubmitSingleCrawl(e)}>
-                        <div className="space-y-2">
-                          <Label>Danh sách aweme_id / URL / Văn bản chia sẻ</Label>
+                        <div className="space-y-1.5">
                           <Textarea
                             rows={6}
+                            className="font-mono text-xs"
                             placeholder={
-                              'Ví dụ:\n7345678901234567890\nhttps://www.douyin.com/video/7345678901234567891\n4.89 复制打开抖音，看看【作品】https://v.douyin.com/iYAbCdE/'
+                              '7345678901234567890\nhttps://www.douyin.com/video/7345678901234567891\nhttps://v.douyin.com/iYAbCdE/'
                             }
                             value={singleInputsText}
                             onChange={(e) => setSingleInputsText(e.target.value)}
@@ -1098,16 +1631,9 @@ export function App() {
                           />
                         </div>
 
-                        <div className="grid gap-4 sm:grid-cols-2 rounded-xl border p-3.5 bg-muted/30">
+                        <div className="grid gap-4 sm:grid-cols-2 rounded-xl border border-border p-3.5">
                           <div className="flex items-center justify-between gap-2">
-                            <div>
-                              <div className="text-xs font-semibold">
-                                Tự động tải Video/Album không logo
-                              </div>
-                              <div className="text-[11px] text-muted-foreground">
-                                Tải luôn file .mp4 về máy ngay sau khi lấy metadata
-                              </div>
-                            </div>
+                            <span className="text-xs font-medium">Tự động tải file không logo</span>
                             <Switch
                               checked={singleAutoDownload}
                               onCheckedChange={setSingleAutoDownload}
@@ -1115,12 +1641,7 @@ export function App() {
                           </div>
 
                           <div className="flex items-center justify-between gap-2">
-                            <div>
-                              <div className="text-xs font-semibold">Tự động gắn Bookmark</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                Lưu thẳng vào danh sách Đã Bookmark
-                              </div>
-                            </div>
+                            <span className="text-xs font-medium">Tự động gắn Bookmark</span>
                             <Switch
                               checked={singleBookmark}
                               onCheckedChange={setSingleBookmark}
@@ -1130,17 +1651,17 @@ export function App() {
 
                         {singleBookmark && (
                           <div className="space-y-1.5">
-                            <Label className="text-xs">Nhãn bộ sưu tập Bookmark (tuỳ chọn)</Label>
+                            <Label className="text-xs">Nhãn bộ sưu tập (tuỳ chọn)</Label>
                             <Input
-                              placeholder="Ví dụ: Crawl lẻ, Tham khảo..."
+                              placeholder="Ví dụ: Tham khảo..."
                               value={singleCollection}
                               onChange={(e) => setSingleCollection(e.target.value)}
                             />
                           </div>
                         )}
 
-                        <div className="rounded-xl border p-3.5 space-y-3">
-                          <Label className="text-xs font-semibold">Thời điểm thực thi</Label>
+                        <div className="rounded-xl border border-border p-3.5 space-y-2.5">
+                          <Label className="text-xs font-medium">Thời điểm chạy</Label>
                           <div className="flex flex-wrap gap-2">
                             <Button
                               type="button"
@@ -1148,7 +1669,7 @@ export function App() {
                               variant={singleScheduleMode === 'NOW' ? 'default' : 'outline'}
                               onClick={() => setSingleScheduleMode('NOW')}
                             >
-                              <Zap className="size-3.5 mr-1.5" /> Chạy quét ngay lập tức
+                              Chạy ngay
                             </Button>
                             <Button
                               type="button"
@@ -1156,12 +1677,11 @@ export function App() {
                               variant={singleScheduleMode === 'ONCE' ? 'default' : 'outline'}
                               onClick={() => setSingleScheduleMode('ONCE')}
                             >
-                              <Clock className="size-3.5 mr-1.5" /> Hẹn giờ chạy 1 lần
+                              <Clock className="size-3.5 mr-1.5" /> Hẹn giờ 1 lần
                             </Button>
                           </div>
                           {singleScheduleMode === 'ONCE' && (
-                            <div className="pt-2 space-y-1">
-                              <Label className="text-xs">Chọn ngày giờ chạy</Label>
+                            <div className="pt-1">
                               <Input
                                 type="datetime-local"
                                 value={singleRunAt}
@@ -1173,7 +1693,7 @@ export function App() {
                         </div>
 
                         {singleStatusMessage && (
-                          <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300 flex items-center gap-2">
+                          <div className="rounded-lg border border-border bg-muted px-3 py-2 text-xs flex items-center gap-2">
                             <CheckCircle2 className="size-4 shrink-0" />
                             <span>{singleStatusMessage}</span>
                           </div>
@@ -1181,56 +1701,41 @@ export function App() {
 
                         <Button type="submit" className="w-full">
                           {singleScheduleMode === 'ONCE'
-                            ? 'Lên lịch Crawl theo ID / Link'
-                            : 'Bắt đầu Crawl ngay'}
+                            ? 'Lên lịch Crawl'
+                            : 'Bắt đầu Crawl'}
                         </Button>
                       </form>
                     </CardContent>
                   </Card>
 
-                  <Card className="lg:col-span-5">
+                  <Card className="surface-standard lg:col-span-5">
                     <CardHeader>
-                      <CardTitle className="text-base">Lịch sử Crawl lẻ gần đây</CardTitle>
-                      <CardDescription>
-                        Theo dõi tiến trình các lệnh Crawl 1 ID / Link
-                      </CardDescription>
+                      <CardTitle className="text-sm font-semibold">Lịch sử Crawl lẻ</CardTitle>
                     </CardHeader>
-                    <CardContent className="space-y-2.5">
+                    <CardContent className="divide-y divide-border">
                       {logsPage.items
                         .filter((l) => l.job_type === 'SINGLE_CRAWL')
                         .slice(0, 8)
                         .map((log) => (
-                          <div
-                            key={log.id}
-                            className="rounded-xl border p-3 text-xs space-y-1.5"
-                          >
+                          <div key={log.id} className="py-2.5 first:pt-0 last:pb-0 text-xs space-y-1">
                             <div className="flex items-center justify-between">
-                              <span className="font-mono font-semibold truncate max-w-[200px]">
+                              <span className="font-mono tabular-nums font-medium truncate max-w-[200px]">
                                 {log.input_summary || `Phiên #${log.id}`}
                               </span>
-                              <Badge
-                                variant={
-                                  log.status === 'SUCCESS'
-                                    ? 'default'
-                                    : log.status === 'SCHEDULED'
-                                      ? 'secondary'
-                                      : log.status === 'RUNNING'
-                                        ? 'outline'
-                                        : 'destructive'
-                                }
-                              >
+                              <Badge variant="outline" className="font-mono text-[10px] font-normal">
                                 {log.status}
                               </Badge>
                             </div>
-                            <div className="text-muted-foreground flex justify-between">
+                            <div className="text-muted-foreground font-mono tabular-nums flex items-center justify-between">
                               <span>{formatDateTime(log.started_at)}</span>
-                              <span>
-                                +{log.new_videos_count} mới / {log.updated_videos_count} cập nhật
-                              </span>
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => openLogTerminal(log.id)}
+                              >
+                                Xem Log
+                              </Button>
                             </div>
-                            {log.error_message && (
-                              <div className="text-rose-400 text-[11px]">{log.error_message}</div>
-                            )}
                           </div>
                         ))}
                     </CardContent>
@@ -1240,32 +1745,32 @@ export function App() {
             )}
 
             {activeSection === 'targets' && (
-              <div className="space-y-6">
+              <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h1 className="text-2xl font-bold tracking-tight">
+                    <h1 className="text-lg font-semibold tracking-tight">
                       Mục tiêu Quét & Thiết lập Hẹn Giờ
                     </h1>
-                    <p className="text-sm text-muted-foreground">
-                      Quản lý Kênh (CHANNEL), Từ khóa (KEYWORD), và Đã lưu Douyin (COLLECT) với bộ chọn lịch trực quan.
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Quản lý Kênh (CHANNEL), Từ khóa (KEYWORD) và mục Đã lưu (COLLECT).
                     </p>
                   </div>
-                  <Button onClick={openCreateTargetModal}>
-                    <Plus className="size-4 mr-1.5" /> Thêm Mục tiêu & Lịch mới
+                  <Button size="sm" onClick={openCreateTargetModal}>
+                    <Plus className="size-3.5 mr-1.5" /> Thêm Mục tiêu
                   </Button>
                 </div>
 
-                <Card>
+                <Card className="surface-standard py-0">
                   <CardContent className="p-0">
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Tên mục tiêu</TableHead>
                           <TableHead>Loại & Giá trị</TableHead>
-                          <TableHead>Chế độ Hẹn giờ</TableHead>
-                          <TableHead>Chạy tiếp theo (Next Run)</TableHead>
+                          <TableHead>Lịch chạy</TableHead>
+                          <TableHead>Chạy tiếp theo</TableHead>
                           <TableHead>Lần chạy cuối</TableHead>
-                          <TableHead>Tự tải Video</TableHead>
+                          <TableHead>Tự tải</TableHead>
                           <TableHead>Trạng thái</TableHead>
                           <TableHead className="text-right">Thao tác</TableHead>
                         </TableRow>
@@ -1273,78 +1778,65 @@ export function App() {
                       <TableBody>
                         {targets.map((target) => (
                           <TableRow key={target.id}>
-                            <TableCell className="font-semibold">
+                            <TableCell className="font-medium text-xs">
                               <div>{target.name}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                Tối đa {target.max_items_per_run} bài/lần
+                              <div className="text-[11px] font-mono tabular-nums text-muted-foreground font-normal">
+                                Tối đa {target.max_items_per_run} bài
                               </div>
                             </TableCell>
                             <TableCell className="text-xs">
-                              <Badge variant="outline" className="mr-1.5">
-                                {target.target_type}
-                              </Badge>
-                              <code className="text-[11px] text-muted-foreground truncate max-w-[180px] inline-block align-bottom">
+                              <span className="font-mono text-[11px] text-muted-foreground mr-1.5">
+                                [{target.target_type}]
+                              </span>
+                              <code className="text-[11px] font-mono text-foreground truncate max-w-[160px] inline-block align-bottom">
                                 {target.target_value}
                               </code>
                             </TableCell>
                             <TableCell className="text-xs">
-                              <Badge variant="secondary">{describeSchedule(target)}</Badge>
+                              {describeSchedule(target)}
                             </TableCell>
-                            <TableCell className="text-xs font-medium text-cyan-400">
+                            <TableCell className="text-xs font-mono tabular-nums text-muted-foreground">
                               {target.is_active && target.next_run_at
                                 ? formatDateTime(target.next_run_at)
-                                : 'Tạm tắt / Thủ công'}
+                                : 'Tạm tắt'}
                             </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
+                            <TableCell className="text-xs font-mono tabular-nums text-muted-foreground">
                               {formatDateTime(target.last_run_at)}
                             </TableCell>
-                            <TableCell>
-                              <Badge variant={target.auto_download ? 'default' : 'outline'}>
-                                {target.auto_download ? 'Tự tải .mp4' : 'Chỉ Cover'}
-                              </Badge>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {target.auto_download ? 'Có' : 'Không'}
                             </TableCell>
                             <TableCell>
-                              <Badge
-                                variant={
-                                  target.last_status === 'SUCCESS'
-                                    ? 'default'
-                                    : target.last_status === 'FAILED'
-                                      ? 'destructive'
-                                      : 'secondary'
-                                }
-                              >
+                              <Badge variant="outline" className="font-mono text-[10px] font-normal">
                                 {target.last_status}
                               </Badge>
                             </TableCell>
                             <TableCell className="text-right space-x-1">
                               <Button
-                                size="sm"
-                                variant="default"
-                                className="h-7 text-xs"
+                                size="xs"
+                                variant="secondary"
                                 onClick={() => void handleRunTargetNow(target.id)}
                               >
-                                <Play className="size-3 mr-1" /> Chạy ngay
+                                Chạy
                               </Button>
                               <Button
-                                size="sm"
+                                size="xs"
                                 variant="outline"
-                                className="h-7 text-xs"
                                 onClick={() => openEditTargetModal(target)}
                               >
-                                <Edit3 className="size-3 mr-1" /> Sửa
+                                Sửa
                               </Button>
                               <Button
-                                size="sm"
+                                size="xs"
                                 variant="ghost"
-                                className="h-7 text-xs"
                                 onClick={() => void handleToggleTargetActive(target)}
                               >
-                                {target.is_active ? 'Tắt lịch' : 'Bật lịch'}
+                                {target.is_active ? 'Tắt' : 'Bật'}
                               </Button>
                               <Button
-                                size="icon"
+                                size="icon-xs"
                                 variant="ghost"
-                                className="size-7 text-rose-400"
+                                aria-label={`Xóa mục tiêu ${target.name}`}
                                 onClick={() => void handleDeleteTarget(target.id)}
                               >
                                 <Trash2 className="size-3.5" />
@@ -1354,8 +1846,8 @@ export function App() {
                         ))}
                         {targets.length === 0 && (
                           <TableRow>
-                            <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                              Chưa có mục tiêu nào. Bấm "Thêm Mục tiêu & Lịch mới" để bắt đầu.
+                            <TableCell colSpan={8} className="py-12 text-center text-muted-foreground text-xs">
+                              Chưa có mục tiêu nào.
                             </TableCell>
                           </TableRow>
                         )}
@@ -1367,56 +1859,57 @@ export function App() {
             )}
 
             {activeSection === 'history' && (
-              <div className="space-y-6">
+              <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h1 className="text-2xl font-bold tracking-tight">
+                    <h1 className="text-lg font-semibold tracking-tight">
                       Lịch sử Chạy Chi Tiết (Execution History)
                     </h1>
-                    <p className="text-sm text-muted-foreground">
-                      Theo dõi toàn bộ các phiên quét theo lịch, quét thủ công, Crawl 1 ID, thời lượng chạy và chạy lại khi lỗi.
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Nhật ký các phiên quét tự động và thủ công.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" onClick={() => void loadLogs()}>
-                      <RefreshCw className="size-3.5 mr-1.5" /> Làm mới
+                      Làm mới
                     </Button>
                     <Button
-                      variant="destructive"
+                      variant="outline"
                       size="sm"
                       onClick={() => void handleClearCompletedLogs()}
                     >
-                      <Trash2 className="size-3.5 mr-1.5" /> Dọn lịch sử đã xong
+                      Dọn lịch sử đã xong
                     </Button>
                   </div>
                 </div>
 
-                <Card>
-                  <CardContent className="p-4 flex flex-wrap items-center gap-3">
+                <Card className="surface-standard">
+                  <CardContent className="p-3 flex flex-wrap items-center gap-2.5">
                     <select
-                      className="h-9 rounded-md border bg-background px-3 text-sm"
+                      aria-label="Lọc theo loại tác vụ"
+                      className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
                       value={logJobTypeFilter}
                       onChange={(e) => setLogJobTypeFilter(e.target.value)}
                     >
                       <option value="">Mọi loại tác vụ</option>
-                      <option value="TARGET_CRAWL">Quét Mục tiêu (Kênh/Từ khóa/Collect)</option>
-                      <option value="SINGLE_CRAWL">Crawl lẻ theo ID / Link</option>
-                      <option value="DOWNLOAD">Tải Media Không Logo (DOWNLOAD)</option>
+                      <option value="TARGET_CRAWL">Quét Mục tiêu</option>
+                      <option value="SINGLE_CRAWL">Crawl lẻ</option>
+                      <option value="DOWNLOAD">Tải Media</option>
                     </select>
                     <select
-                      className="h-9 rounded-md border bg-background px-3 text-sm"
+                      aria-label="Lọc theo trạng thái phiên chạy"
+                      className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
                       value={logStatusFilter}
                       onChange={(e) => setLogStatusFilter(e.target.value)}
                     >
                       <option value="">Mọi trạng thái</option>
-                      <option value="RUNNING">Đang chạy (RUNNING)</option>
-                      <option value="SCHEDULED">Đã hẹn giờ (SCHEDULED)</option>
-                      <option value="SUCCESS">Thành công (SUCCESS)</option>
-                      <option value="FAILED">Thất bại (FAILED)</option>
-                      <option value="CAPTCHA_BLOCKED">Chặn Captcha (CAPTCHA_BLOCKED)</option>
+                      <option value="RUNNING">Đang chạy</option>
+                      <option value="SUCCESS">Thành công</option>
+                      <option value="FAILED">Thất bại</option>
                     </select>
                     <select
-                      className="h-9 rounded-md border bg-background px-3 text-sm"
+                      aria-label="Lọc theo mục tiêu"
+                      className="h-8 rounded-lg border border-input bg-card px-2.5 text-xs text-foreground outline-none"
                       value={logTargetFilter}
                       onChange={(e) => setLogTargetFilter(e.target.value)}
                     >
@@ -1427,90 +1920,74 @@ export function App() {
                         </option>
                       ))}
                     </select>
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      Tổng cộng: <strong>{logsPage.total}</strong> phiên chạy
+                    <span className="ml-auto text-xs text-muted-foreground font-mono tabular-nums">
+                      {logsPage.total} phiên
                     </span>
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="surface-standard py-0">
                   <CardContent className="p-0">
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead>ID</TableHead>
-                          <TableHead>Loại & Nguồn kích hoạt</TableHead>
-                          <TableHead>Mục tiêu / Đầu vào</TableHead>
-                          <TableHead>Bắt đầu → Kết thúc</TableHead>
+                          <TableHead>Loại</TableHead>
+                          <TableHead>Mục tiêu</TableHead>
+                          <TableHead>Thời gian</TableHead>
                           <TableHead>Thời lượng</TableHead>
-                          <TableHead>Kết quả (Mới / Cập nhật)</TableHead>
-                          <TableHead>Trạng thái & Lỗi</TableHead>
+                          <TableHead>Kết quả</TableHead>
+                          <TableHead>Trạng thái</TableHead>
                           <TableHead className="text-right">Thao tác</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {logsPage.items.map((log) => (
                           <TableRow key={log.id}>
-                            <TableCell className="font-mono text-xs">#{log.id}</TableCell>
-                            <TableCell className="text-xs">
-                              <Badge variant="outline" className="mr-1">
-                                {log.job_type}
-                              </Badge>
-                              <Badge variant="secondary" className="text-[10px]">
-                                {log.trigger_type}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-xs font-medium max-w-[220px] truncate">
-                              {log.target_name || log.input_summary || '—'}
-                            </TableCell>
-                            <TableCell className="text-xs">
-                              <div>{formatDateTime(log.started_at)}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                → {log.finished_at ? formatDateTime(log.finished_at) : 'Đang chạy'}
-                              </div>
+                            <TableCell className="font-mono tabular-nums text-xs text-muted-foreground">
+                              #{log.id}
                             </TableCell>
                             <TableCell className="text-xs font-mono">
+                              {log.job_type}
+                            </TableCell>
+                            <TableCell className="text-xs font-medium max-w-[200px] truncate">
+                              {log.target_name || log.input_summary || '—'}
+                            </TableCell>
+                            <TableCell className="text-xs font-mono tabular-nums text-muted-foreground">
+                              {formatDateTime(log.started_at)}
+                            </TableCell>
+                            <TableCell className="text-xs font-mono tabular-nums">
                               {formatExecutionDuration(log.duration_ms)}
                             </TableCell>
-                            <TableCell className="text-xs">
-                              <span className="text-emerald-400 font-semibold">
-                                +{log.new_videos_count} mới
-                              </span>{' '}
-                              · <span>{log.updated_videos_count} cập nhật</span>
+                            <TableCell className="text-xs font-mono tabular-nums">
+                              +{log.new_videos_count} mới · {log.updated_videos_count} trùng
                             </TableCell>
-                            <TableCell className="max-w-[220px]">
-                              <Badge
-                                variant={
-                                  log.status === 'SUCCESS'
-                                    ? 'default'
-                                    : log.status === 'RUNNING' || log.status === 'SCHEDULED'
-                                      ? 'secondary'
-                                      : 'destructive'
-                                }
-                              >
+                            <TableCell>
+                              <Badge variant="outline" className="font-mono text-[10px] font-normal">
                                 {log.status}
                               </Badge>
-                              {log.error_message && (
-                                <p className="text-[11px] text-rose-400 mt-1 line-clamp-2">
-                                  {log.error_message}
-                                </p>
-                              )}
                             </TableCell>
                             <TableCell className="text-right space-x-1">
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => openLogTerminal(log.id)}
+                              >
+                                Xem Log
+                              </Button>
                               {(log.status === 'FAILED' || log.status === 'CAPTCHA_BLOCKED') && (
                                 <Button
-                                  size="sm"
+                                  size="xs"
                                   variant="outline"
-                                  className="h-7 text-xs"
                                   onClick={() => void handleRetryLog(log.id)}
                                 >
-                                  <RotateCcw className="size-3 mr-1" /> Chạy lại
+                                  <RotateCcw className="size-3.5 mr-1" /> Chạy lại
                                 </Button>
                               )}
                               <Button
-                                size="icon"
+                                size="icon-xs"
                                 variant="ghost"
-                                className="size-7 text-rose-400"
+                                aria-label={`Xóa bản ghi lịch sử #${log.id}`}
                                 onClick={() => void handleDeleteLog(log.id)}
                               >
                                 <Trash2 className="size-3.5" />
@@ -1518,13 +1995,6 @@ export function App() {
                             </TableCell>
                           </TableRow>
                         ))}
-                        {logsPage.items.length === 0 && (
-                          <TableRow>
-                            <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                              Không có bản ghi lịch sử nào.
-                            </TableCell>
-                          </TableRow>
-                        )}
                       </TableBody>
                     </Table>
                   </CardContent>
@@ -1532,53 +2002,225 @@ export function App() {
               </div>
             )}
 
-            {activeSection === 'anti-bot' && antiBot && (
-              <div className="space-y-6">
+            {activeSection === 'studio-settings' && (
+              <div className="space-y-5">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight">
-                    Thiết lập Chống Bot (Anti-Bot & Stealth)
+                  <h1 className="text-lg font-semibold tracking-tight">
+                    Cấu hình Server Phân tích (IP & Port)
                   </h1>
-                  <p className="text-sm text-muted-foreground">
-                    Giả lập hành vi người dùng thật, tạo độ trễ ngẫu nhiên (Jitter), ẩn dấu vết WebDriver và tự động dừng an toàn khi gặp Captcha.
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Trỏ tới địa chỉ IP và Port của dịch vụ phân tích / Edit Studio (có thể chạy trên máy này hoặc máy chủ khác trong mạng).
                   </p>
                 </div>
 
-                {/* 3 Preset Cards */}
-                <div className="grid gap-4 md:grid-cols-3">
+                <Card className="surface-standard max-w-2xl">
+                  <CardHeader>
+                    <CardTitle className="text-sm font-semibold">
+                      Địa chỉ kết nối Server Phân tích
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Đường dẫn hiện tại: <code className="font-mono text-foreground">{editStudioBaseUrl}</code>
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form className="space-y-4" onSubmit={(e) => void handleSaveStudioSettings(e)}>
+                      <div className="grid gap-4 sm:grid-cols-3 font-mono tabular-nums">
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <Label htmlFor="studio-host-input" className="font-sans text-xs">
+                            Địa chỉ IP hoặc Hostname
+                          </Label>
+                          <Input
+                            id="studio-host-input"
+                            aria-label="Địa chỉ IP hoặc Hostname"
+                            placeholder="Ví dụ: 192.168.1.50 hoặc 127.0.0.1"
+                            value={studioHost}
+                            onChange={(e) => setStudioHost(e.target.value)}
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="studio-port-input" className="font-sans text-xs">
+                            Cổng (Port)
+                          </Label>
+                          <Input
+                            id="studio-port-input"
+                            aria-label="Cổng (Port)"
+                            type="number"
+                            min={1}
+                            max={65535}
+                            placeholder="8000"
+                            value={studioPort}
+                            onChange={(e) => setStudioPort(Number(e.target.value))}
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <span className="text-xs text-muted-foreground">Mẫu nhanh:</span>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          onClick={() => {
+                            setStudioHost('127.0.0.1')
+                            setStudioPort(8000)
+                          }}
+                        >
+                          Localhost (127.0.0.1:8000)
+                        </Button>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-border">
+                        {studioSavedNotice ? (
+                          <span className="text-xs text-foreground flex items-center gap-1.5">
+                            <CheckCircle2 className="size-4" /> Đã lưu địa chỉ {editStudioBaseUrl}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            Không bắt buộc kết nối ngầm khi duyệt danh sách video.
+                          </span>
+                        )}
+                        <Button type="submit" size="sm">
+                          Lưu địa chỉ Server
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                <Card className="surface-standard max-w-2xl">
+                  <CardHeader>
+                    <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                      <KeyRound className="size-4" />
+                      Tài khoản Quản trị (Đổi mật khẩu)
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Đổi tên đăng nhập hoặc mật khẩu bảo vệ hệ thống. Đang đăng nhập: <code className="font-mono text-foreground">{adminUsername}</code>
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form className="space-y-4" onSubmit={(e) => void handleChangeAdminPassword(e)}>
+                      <div className="grid gap-4 sm:grid-cols-3">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="admin-new-username" className="text-xs">
+                            Tên đăng nhập mới
+                          </Label>
+                          <Input
+                            id="admin-new-username"
+                            aria-label="Tên đăng nhập mới"
+                            value={pwNewUsername}
+                            onChange={(e) => setPwNewUsername(e.target.value)}
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="admin-current-pw" className="text-xs">
+                            Mật khẩu hiện tại
+                          </Label>
+                          <Input
+                            id="admin-current-pw"
+                            aria-label="Mật khẩu hiện tại"
+                            type="password"
+                            placeholder="Nhập mật khẩu cũ"
+                            value={pwCurrent}
+                            onChange={(e) => setPwCurrent(e.target.value)}
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="admin-new-pw" className="text-xs">
+                            Mật khẩu mới
+                          </Label>
+                          <Input
+                            id="admin-new-pw"
+                            aria-label="Mật khẩu mới"
+                            type="password"
+                            placeholder="Ít nhất 4 ký tự"
+                            minLength={4}
+                            value={pwNewPassword}
+                            onChange={(e) => setPwNewPassword(e.target.value)}
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      {pwError && (
+                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                          {pwError}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between pt-2 border-t border-border">
+                        {pwNotice ? (
+                          <span className="text-xs text-foreground flex items-center gap-1.5">
+                            <CheckCircle2 className="size-4" /> {pwNotice}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            Đổi mật khẩu sẽ hủy hiệu lực các phiên đăng nhập cũ ngay lập tức.
+                          </span>
+                        )}
+                        <Button type="submit" size="sm" variant="secondary">
+                          Cập nhật mật khẩu
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {activeSection === 'anti-bot' && antiBot && (
+              <div className="space-y-5">
+                <div>
+                  <h1 className="text-lg font-semibold tracking-tight">
+                    Thiết lập Chống Bot (Anti-Bot & Stealth)
+                  </h1>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Điều chỉnh tốc độ cuộn trang, thời gian nghỉ và chế độ bảo vệ tài khoản.
+                  </p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-3">
                   {(
                     [
                       {
                         key: 'SAFE',
-                        title: '🛡 An Toàn Cao (SAFE)',
-                        desc: 'Nghỉ 3.0s–6.5s mỗi nhịp cuộn, Cooldown 25s giữa các kênh. Phù hợp treo máy dài ngày không lo Captcha.',
+                        title: 'An Toàn (SAFE)',
+                        desc: 'Nghỉ 3.0s–6.5s mỗi nhịp cuộn, Cooldown 25s giữa các kênh.',
                       },
                       {
                         key: 'BALANCED',
-                        title: '⚖️ Cân Bằng (BALANCED - Khuyên dùng)',
-                        desc: 'Nghỉ 1.5s–3.5s mỗi nhịp cuộn, Cooldown 10s, bật Stealth & cuộn tự nhiên như người thật.',
+                        title: 'Cân Bằng (BALANCED)',
+                        desc: 'Nghỉ 1.5s–3.5s mỗi nhịp cuộn, Cooldown 10s.',
                       },
                       {
                         key: 'FAST',
-                        title: '⚡ Tốc Độ Nhanh (FAST)',
-                        desc: 'Nghỉ 0.6s–1.4s, tối đa 50 trang/lần. Dành cho quét nhanh số lượng ít.',
+                        title: 'Nhanh (FAST)',
+                        desc: 'Nghỉ 0.6s–1.4s, phù hợp quét nhanh số lượng ít.',
                       },
                     ] as const
                   ).map((p) => (
                     <Card
                       key={p.key}
                       onClick={() => void handleApplyPreset(p.key)}
-                      className={`cursor-pointer transition ${
+                      className={`surface-standard cursor-pointer transition ${
                         antiBot.preset === p.key
-                          ? 'border-primary ring-2 ring-primary/40'
-                          : 'hover:border-primary/40'
+                          ? 'ring-2 ring-foreground border-foreground'
+                          : 'hover:border-foreground/25'
                       }`}
                     >
                       <CardHeader className="pb-2">
                         <div className="flex items-center justify-between">
-                          <CardTitle className="text-base">{p.title}</CardTitle>
-                          {antiBot.preset === p.key && <Badge>Đang chọn</Badge>}
+                          <CardTitle className="text-sm font-semibold">{p.title}</CardTitle>
+                          {antiBot.preset === p.key && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              Đang chọn
+                            </Badge>
+                          )}
                         </div>
-                        <CardDescription className="text-xs leading-relaxed">
+                        <CardDescription className="text-xs">
                           {p.desc}
                         </CardDescription>
                       </CardHeader>
@@ -1586,21 +2228,18 @@ export function App() {
                   ))}
                 </div>
 
-                <Card>
+                <Card className="surface-standard">
                   <CardHeader>
-                    <CardTitle className="text-base">
-                      Tuỳ chỉnh Thông số Chống Bot Chi Tiết
+                    <CardTitle className="text-sm font-semibold">
+                      Thông số chi tiết
                     </CardTitle>
-                    <CardDescription>
-                      Mọi thay đổi được lưu trực tiếp vào PostgreSQL và áp dụng ngay cho phiên quét kế tiếp.
-                    </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <form className="space-y-5" onSubmit={(e) => void handleSaveAntiBot(e)}>
-                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <form className="space-y-4" onSubmit={(e) => void handleSaveAntiBot(e)}>
+                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 font-mono tabular-nums">
                         <div className="space-y-1.5">
-                          <Label className="text-xs">
-                            Độ trễ cuộn trang tối thiểu (ms)
+                          <Label className="font-sans text-xs">
+                            Độ trễ cuộn tối thiểu (ms)
                           </Label>
                           <Input
                             type="number"
@@ -1614,8 +2253,8 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <Label className="text-xs">
-                            Độ trễ cuộn trang tối đa (ms)
+                          <Label className="font-sans text-xs">
+                            Độ trễ cuộn tối đa (ms)
                           </Label>
                           <Input
                             type="number"
@@ -1629,8 +2268,8 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <Label className="text-xs">
-                            Thời gian nghỉ giữa 2 mục tiêu (giây)
+                          <Label className="font-sans text-xs">
+                            Nghỉ giữa 2 mục tiêu (giây)
                           </Label>
                           <Input
                             type="number"
@@ -1644,7 +2283,7 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <Label className="text-xs">Độ trễ tải file tối thiểu (ms)</Label>
+                          <Label className="font-sans text-xs">Độ trễ tải tối thiểu (ms)</Label>
                           <Input
                             type="number"
                             value={antiBot.download_delay_min_ms}
@@ -1657,7 +2296,7 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <Label className="text-xs">Độ trễ tải file tối đa (ms)</Label>
+                          <Label className="font-sans text-xs">Độ trễ tải tối đa (ms)</Label>
                           <Input
                             type="number"
                             value={antiBot.download_delay_max_ms}
@@ -1670,7 +2309,7 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-1.5">
-                          <Label className="text-xs">Số lần cuộn tối đa mỗi phiên</Label>
+                          <Label className="font-sans text-xs">Số lần cuộn tối đa</Label>
                           <Input
                             type="number"
                             value={antiBot.max_pages_per_run}
@@ -1684,14 +2323,19 @@ export function App() {
                         </div>
                       </div>
 
-                      <div className="grid gap-4 sm:grid-cols-3 rounded-xl border p-4 bg-muted/30">
+                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 rounded-xl border border-border p-3.5">
                         <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-xs font-semibold">Stealth Ẩn WebDriver</div>
-                            <div className="text-[11px] text-muted-foreground">
-                              Xóa cờ navigator.webdriver của Chromium
-                            </div>
-                          </div>
+                          <span className="text-xs font-medium">Chạy ẩn (Headless)</span>
+                          <Switch
+                            checked={Boolean(antiBot.headless_mode)}
+                            onCheckedChange={(v) =>
+                              setAntiBot({ ...antiBot, headless_mode: v })
+                            }
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium">Ẩn WebDriver (Stealth)</span>
                           <Switch
                             checked={antiBot.stealth_mode}
                             onCheckedChange={(v) => setAntiBot({ ...antiBot, stealth_mode: v })}
@@ -1699,12 +2343,7 @@ export function App() {
                         </div>
 
                         <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-xs font-semibold">Cuộn trang như người thật</div>
-                            <div className="text-[11px] text-muted-foreground">
-                              Chia nhịp cuộn ngẫu nhiên thay vì nhảy cứng
-                            </div>
-                          </div>
+                          <span className="text-xs font-medium">Cuộn tự nhiên</span>
                           <Switch
                             checked={antiBot.human_scroll}
                             onCheckedChange={(v) => setAntiBot({ ...antiBot, human_scroll: v })}
@@ -1712,14 +2351,7 @@ export function App() {
                         </div>
 
                         <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-xs font-semibold">
-                              Tự dừng khi gặp Captcha
-                            </div>
-                            <div className="text-[11px] text-muted-foreground">
-                              Dừng quét ngay và báo cảnh báo lên Dashboard
-                            </div>
-                          </div>
+                          <span className="text-xs font-medium">Tự dừng khi gặp Captcha</span>
                           <Switch
                             checked={antiBot.auto_stop_on_captcha}
                             onCheckedChange={(v) =>
@@ -1729,46 +2361,17 @@ export function App() {
                         </div>
                       </div>
 
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Proxy URL (HTTP / SOCKS5 - Tuỳ chọn)</Label>
-                          <Input
-                            placeholder="Ví dụ: http://127.0.0.1:7890 hoặc để trống"
-                            value={antiBot.proxy_url || ''}
-                            onChange={(e) =>
-                              setAntiBot({
-                                ...antiBot,
-                                proxy_url: e.target.value || null,
-                              })
-                            }
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Custom User-Agent (Tuỳ chọn)</Label>
-                          <Input
-                            placeholder="Để trống để dùng User-Agent chuẩn của Chromium Profile"
-                            value={antiBot.user_agent || ''}
-                            onChange={(e) =>
-                              setAntiBot({
-                                ...antiBot,
-                                user_agent: e.target.value || null,
-                              })
-                            }
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-2">
+                      <div className="flex items-center justify-between pt-1">
                         {antiBotSavedNotice ? (
-                          <span className="text-xs text-emerald-400 flex items-center gap-1.5">
-                            <CheckCircle2 className="size-4" /> Đã lưu cấu hình Chống Bot thành công!
+                          <span className="text-xs text-foreground flex items-center gap-1.5">
+                            <CheckCircle2 className="size-4" /> Đã lưu cấu hình
                           </span>
                         ) : (
-                          <span className="text-xs text-muted-foreground">
-                            Cập nhật lần cuối: {formatDateTime(antiBot.updated_at)}
+                          <span className="text-xs text-muted-foreground font-mono tabular-nums">
+                            Cập nhật: {formatDateTime(antiBot.updated_at)}
                           </span>
                         )}
-                        <Button type="submit">Lưu Cấu hình Chống Bot</Button>
+                        <Button type="submit" size="sm">Lưu cấu hình</Button>
                       </div>
                     </form>
                   </CardContent>
@@ -1779,7 +2382,6 @@ export function App() {
         </main>
       </div>
 
-      {/* Modal Xem Trước Video / Album & Chỉnh sửa Bookmark */}
       <VideoPreviewDialog
         video={previewVideo}
         open={previewVideo !== null}
@@ -1788,26 +2390,27 @@ export function App() {
         }}
         onDownload={handleDownloadSingle}
         onSaveBookmark={handleSaveBookmarkDetail}
+        onSendToEdit={handleSendToEdit}
+        sendingToEdit={previewVideo ? sendingEditIds.includes(previewVideo.aweme_id) : false}
       />
 
-      {/* Modal Thêm / Sửa Mục tiêu & Bộ chọn Lịch Hẹn Giờ Trực Quan */}
       <Dialog open={targetModalOpen} onOpenChange={setTargetModalOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>
               {targetForm.id === null
-                ? 'Thêm Mục tiêu Quét & Thiết lập Hẹn Giờ'
+                ? 'Thêm Mục tiêu Quét'
                 : `Chỉnh sửa Mục tiêu #${targetForm.id}`}
             </DialogTitle>
             <DialogDescription>
-              Chọn loại nguồn dữ liệu và thiết lập lịch chạy tự động trực quan.
+              Thiết lập nguồn dữ liệu và lịch chạy tự động.
             </DialogDescription>
           </DialogHeader>
 
-          <form className="space-y-4" onSubmit={(e) => void handleSaveTarget(e)}>
+          <form className="space-y-4 mt-2" onSubmit={(e) => void handleSaveTarget(e)}>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label className="text-xs">Tên hiển thị mục tiêu</Label>
+                <Label className="text-xs">Tên hiển thị</Label>
                 <Input
                   placeholder="Ví dụ: Kênh Thời trang A"
                   value={targetForm.name}
@@ -1818,7 +2421,8 @@ export function App() {
               <div className="space-y-1.5">
                 <Label className="text-xs">Loại mục tiêu</Label>
                 <select
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                  aria-label="Loại mục tiêu"
+                  className="h-8 w-full rounded-lg border border-input bg-card px-3 text-xs text-foreground outline-none"
                   value={targetForm.target_type}
                   onChange={(e) =>
                     setTargetForm({
@@ -1829,30 +2433,18 @@ export function App() {
                     })
                   }
                 >
-                  <option value="CHANNEL">CHANNEL (Quét Kênh Douyin)</option>
-                  <option value="KEYWORD">KEYWORD (Quét Từ khóa xu hướng)</option>
-                  <option value="COLLECT">COLLECT (Đồng bộ mục Đã lưu trên Douyin)</option>
+                  <option value="CHANNEL">CHANNEL (Kênh Douyin)</option>
+                  <option value="KEYWORD">KEYWORD (Từ khóa)</option>
+                  <option value="COLLECT">COLLECT (Mục Đã lưu)</option>
                 </select>
               </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1.5 sm:col-span-2">
-                <Label className="text-xs">
-                  {targetForm.target_type === 'CHANNEL'
-                    ? 'Link kênh hoặc mã sec_uid'
-                    : targetForm.target_type === 'KEYWORD'
-                      ? 'Từ khóa tìm kiếm'
-                      : 'Tài khoản Douyin (mặc định: self)'}
-                </Label>
+                <Label className="text-xs">Giá trị nguồn</Label>
                 <Input
-                  placeholder={
-                    targetForm.target_type === 'CHANNEL'
-                      ? 'https://www.douyin.com/user/MS4wLjABAAAA...'
-                      : targetForm.target_type === 'KEYWORD'
-                        ? 'Ví dụ: 穿搭 / ẩm thực'
-                        : 'self'
-                  }
+                  placeholder="Link kênh, từ khóa hoặc self"
                   value={targetForm.target_value}
                   onChange={(e) =>
                     setTargetForm({ ...targetForm, target_value: e.target.value })
@@ -1866,6 +2458,7 @@ export function App() {
                   type="number"
                   min={1}
                   max={500}
+                  className="font-mono tabular-nums"
                   value={targetForm.max_items_per_run}
                   onChange={(e) =>
                     setTargetForm({
@@ -1878,16 +2471,15 @@ export function App() {
               </div>
             </div>
 
-            {/* Bộ chọn Lịch Hẹn Giờ Trực Quan (Visual Schedule Picker) */}
-            <div className="rounded-xl border p-3.5 space-y-3 bg-muted/30">
-              <Label className="text-xs font-semibold">Chế độ Hẹn Giờ (Schedule Mode)</Label>
+            <div className="rounded-xl border border-border p-3.5 space-y-3">
+              <Label className="text-xs font-medium">Chế độ hẹn giờ</Label>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
                 {(
                   [
                     { id: 'INTERVAL', label: 'Chu kỳ lặp' },
-                    { id: 'DAILY', label: 'Giờ cố định' },
+                    { id: 'DAILY', label: 'Hàng ngày' },
                     { id: 'ONCE', label: 'Chạy 1 lần' },
-                    { id: 'CRON', label: 'Cron nâng cao' },
+                    { id: 'CRON', label: 'Cron' },
                     { id: 'MANUAL', label: 'Thủ công' },
                   ] as const
                 ).map((mode) => (
@@ -1896,7 +2488,6 @@ export function App() {
                     type="button"
                     size="sm"
                     variant={targetForm.schedule_type === mode.id ? 'default' : 'outline'}
-                    className="text-xs h-8"
                     onClick={() => setTargetForm({ ...targetForm, schedule_type: mode.id })}
                   >
                     {mode.label}
@@ -1905,12 +2496,13 @@ export function App() {
               </div>
 
               {targetForm.schedule_type === 'INTERVAL' && (
-                <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="grid grid-cols-2 gap-3 pt-1">
                   <div className="space-y-1">
                     <Label className="text-xs">Mỗi khoảng</Label>
                     <Input
                       type="number"
                       min={1}
+                      className="font-mono tabular-nums"
                       value={targetForm.interval_every}
                       onChange={(e) =>
                         setTargetForm({
@@ -1921,9 +2513,10 @@ export function App() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs">Đơn vị thời gian</Label>
+                    <Label className="text-xs">Đơn vị</Label>
                     <select
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                      aria-label="Đơn vị thời gian"
+                      className="h-8 w-full rounded-lg border border-input bg-card px-3 text-xs text-foreground outline-none"
                       value={targetForm.interval_unit}
                       onChange={(e) =>
                         setTargetForm({
@@ -1932,21 +2525,22 @@ export function App() {
                         })
                       }
                     >
-                      <option value="minutes">Phút (Minutes)</option>
-                      <option value="hours">Giờ (Hours)</option>
+                      <option value="minutes">Phút</option>
+                      <option value="hours">Giờ</option>
                     </select>
                   </div>
                 </div>
               )}
 
               {targetForm.schedule_type === 'DAILY' && (
-                <div className="grid grid-cols-3 gap-3 pt-2">
+                <div className="grid grid-cols-3 gap-3 pt-1">
                   <div className="space-y-1">
                     <Label className="text-xs">Giờ (0–23)</Label>
                     <Input
                       type="number"
                       min={0}
                       max={23}
+                      className="font-mono tabular-nums"
                       value={targetForm.daily_hour}
                       onChange={(e) =>
                         setTargetForm({
@@ -1962,6 +2556,7 @@ export function App() {
                       type="number"
                       min={0}
                       max={59}
+                      className="font-mono tabular-nums"
                       value={targetForm.daily_minute}
                       onChange={(e) =>
                         setTargetForm({
@@ -1972,9 +2567,10 @@ export function App() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs">Thứ trong tuần</Label>
+                    <Label className="text-xs">Thứ</Label>
                     <Input
-                      placeholder="* hoặc mon,wed,fri"
+                      className="font-mono text-xs"
+                      placeholder="*"
                       value={targetForm.daily_days}
                       onChange={(e) =>
                         setTargetForm({ ...targetForm, daily_days: e.target.value })
@@ -1985,8 +2581,7 @@ export function App() {
               )}
 
               {targetForm.schedule_type === 'ONCE' && (
-                <div className="pt-2 space-y-1">
-                  <Label className="text-xs">Thời điểm chạy 1 lần duy nhất</Label>
+                <div className="pt-1">
                   <Input
                     type="datetime-local"
                     value={targetForm.once_run_at}
@@ -1999,9 +2594,9 @@ export function App() {
               )}
 
               {targetForm.schedule_type === 'CRON' && (
-                <div className="pt-2 space-y-1">
-                  <Label className="text-xs">Biểu thức Cron 5 trường</Label>
+                <div className="pt-1">
                   <Input
+                    className="font-mono text-xs"
                     placeholder="0 */6 * * *"
                     value={targetForm.cron_expr}
                     onChange={(e) =>
@@ -2013,14 +2608,9 @@ export function App() {
               )}
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 rounded-xl border p-3">
+            <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-border p-3.5">
               <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-xs font-semibold">Tự động tải luôn Video/Album</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Có bài mới là tải sẵn file .mp4 không logo
-                  </div>
-                </div>
+                <span className="text-xs font-medium">Tự động tải file không logo</span>
                 <Switch
                   checked={targetForm.auto_download}
                   onCheckedChange={(v) => setTargetForm({ ...targetForm, auto_download: v })}
@@ -2028,12 +2618,7 @@ export function App() {
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-xs font-semibold">Kích hoạt lịch ngay</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Tự động đưa vào bộ lập lịch
-                  </div>
-                </div>
+                <span className="text-xs font-medium">Kích hoạt lịch ngay</span>
                 <Switch
                   checked={targetForm.is_active}
                   onCheckedChange={(v) => setTargetForm({ ...targetForm, is_active: v })}
@@ -2056,6 +2641,51 @@ export function App() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={confirmDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDialog(null)
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{confirmDialog?.title}</DialogTitle>
+            <DialogDescription>{confirmDialog?.description}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmDialog(null)}
+            >
+              Hủy
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                const action = confirmDialog?.onConfirm
+                setConfirmDialog(null)
+                if (action) void action()
+              }}
+            >
+              {confirmDialog?.confirmLabel || 'Xác nhận xóa'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <LiveTerminalDrawer
+        logs={logsPage.items}
+        selectedLogId={selectedTerminalLogId}
+        open={terminalOpen}
+        minimized={terminalMinimized}
+        onSelectLog={(id) => setSelectedTerminalLogId(id)}
+        onToggleMinimize={() => setTerminalMinimized((m) => !m)}
+        onClose={() => setTerminalOpen(false)}
+        onRetry={handleRetryLog}
+      />
     </div>
   )
 }

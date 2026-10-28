@@ -67,6 +67,8 @@ def upgrade() -> None:
         sa.Column("bookmark_collection", sa.String(128), nullable=True),
     )
     op.add_column("douyin_videos", sa.Column("bookmark_note", sa.Text(), nullable=True))
+    op.add_column("douyin_videos", sa.Column("edit_item_id", sa.String(64), nullable=True))
+    op.add_column("douyin_videos", sa.Column("edit_list_id", sa.String(64), nullable=True))
     op.create_index("ix_douyin_videos_is_bookmarked", "douyin_videos", ["is_bookmarked"])
     op.create_index("ix_douyin_videos_duration_ms", "douyin_videos", ["duration_ms"])
 
@@ -151,6 +153,8 @@ def downgrade() -> None:
 
     op.drop_index("ix_douyin_videos_duration_ms", table_name="douyin_videos")
     op.drop_index("ix_douyin_videos_is_bookmarked", table_name="douyin_videos")
+    op.drop_column("douyin_videos", "edit_list_id")
+    op.drop_column("douyin_videos", "edit_item_id")
     op.drop_column("douyin_videos", "bookmark_note")
     op.drop_column("douyin_videos", "bookmark_collection")
     op.drop_column("douyin_videos", "bookmarked_at")
